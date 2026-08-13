@@ -69,13 +69,23 @@ The matrix is written with `bgzip` and a `tabix` index rather than plain gzip.
 That is what lets every later stage read a region instead of scanning the whole
 file, and it is what makes an arbitrary interval a valid unit of work.
 
-Row counts are compared across every input before anything is pasted together.
-`paste` aligns by position and cannot tell that one sample was processed against
-a different contig set — the offending sample's depths would simply be
-attributed to the wrong coordinates, and nothing downstream would notice. The
-count comes from the decompression already being performed, so it is free.
-`--strict-coords` additionally compares a checksum of the coordinate columns,
-which is worth enabling for data you did not generate yourself.
+Row counts are verified inside every extraction worker. `paste` aligns by
+position and cannot tell that one sample was processed against a different
+contig set — the offending sample's depths would simply be attributed to the
+wrong coordinates, and nothing downstream would notice. A mismatch therefore
+stops the run at the offending sample, not at the end. `--strict-coords`
+additionally compares a checksum of the coordinate columns, which is worth
+enabling for data you did not generate yourself. A manifest listing the same
+sample twice is refused for the same reason: later stages match columns by
+name.
+
+Columns are extracted `--jobs` at a time and pasted in batches sized near √N
+by default, which keeps every step clear of the open-file limit — the limit is
+checked up front, with the fix in the error message. Each finished batch is
+compressed and its inputs deleted, so scratch stays near two batches of
+columns rather than a full uncompressed copy of the matrix, and a re-run
+resumes from the last finished batch as long as the manifest and batching are
+unchanged.
 
 Writes `depth.matrix.txt.gz`, its index, and a manifest recording the sample
 list, region count and coordinate source.
@@ -90,8 +100,9 @@ depth matrix to remove technical structure.
 remove depends on the batch structure of your cohort and is best established
 empirically against your own data; the pipeline does not assume a value.
 
-Also writes per-region pre- and post-correction summary statistics, which are
-the raw material for the QC filters applied at the next stage.
+Also writes per-region pre- and post-correction summary statistics. Nothing
+reads them automatically; they are the evidence for choosing the QC thresholds
+applied at the next stage.
 
 The residualisation is computed as `v − Q(Qᵀv)` from an explicitly formed
 orthonormal basis. This is the same projection `qr.resid()` computes, measured
@@ -118,24 +129,28 @@ them prints the full usage. The rest are these:
 
 | Flag | Stages | Meaning |
 |---|---|---|
-| `--jobs N` | correct, analyze | parallel workers within one region |
+| `--jobs N` | all | parallel workers within one unit |
 | `--threads N` | all | compression threads |
 | `--chunk N` | correct, analyze | maximum rows handed to one worker; the actual number is whatever fits in the memory bound, so this is a cap rather than a target |
-| `--force` | correct, analyze | redo a unit that already completed |
+| `--force` | all | redo a unit that already completed |
 | `--min-obs N` | analyze | skip a region with fewer complete observations |
 | `--min-variance X` | analyze | skip a region whose depth does not vary |
 | `--name` | analyze | label for a single-model run; defaults to the response variable |
-| `--batch-size N` | join | samples per `paste` batch, kept clear of the open-file limit |
+| `--batch-size N` | join | samples per `paste` batch; the default sizes it near √N, inside the open-file limit |
 | `--strict-coords` | join | also checksum the coordinate columns |
-| `--projection qr` | correct, analyze | use the Householder projection instead of the default |
-| `--sampleIdPattern` | correct, analyze | PCRE to recover sample IDs from column names |
+| `--projection qr` | correct, analyze — after `--` | use the Householder projection instead of the default |
+| `--sampleIdPattern` | correct, analyze — after `--` | PCRE to recover sample IDs from column names |
 
-Anything after `--` is passed through to the R driver unchanged.
+Anything after `--` is passed through to the R driver unchanged, which is how
+the last two are set — the stage scripts themselves reject flags they do not
+know.
 
 ### Configuration
 
-Every flag has a matching `DSV_*` environment variable, so a site can set its
-paths and parallelism once instead of repeating them:
+The flags a site would fix — inputs, output directories, parallelism, QC
+thresholds — have matching `DSV_*` environment variables, so they can be set
+once instead of repeated. Per-run flags such as `--region` stay on the command
+line:
 
 ```bash
 cp conf/example.env conf/mysite.env    # conf/*.env is gitignored
@@ -166,6 +181,10 @@ scripts/regions.sh --matrix work/join/depth.matrix.txt.gz \
                    --window 10000000 --sizes hg38.chrom.sizes > regions.txt
 ```
 
+A windowed list partitions the matrix: every bin lands in exactly one unit,
+with windows aligned up to bin edges, so concatenating the shards yields each
+region exactly once.
+
 That one list drives every dispatcher, which is what keeps them interchangeable:
 
 ```bash
@@ -191,12 +210,18 @@ usable.
 Every stage writes to a temporary file, verifies it, indexes it, and only then
 moves it into place and writes a `.done` marker. A stage that dies leaves the
 temporary file for inspection and no marker, so re-running redoes exactly that
-unit and nothing else.
+unit and nothing else. A failed join additionally resumes from its last
+finished batch.
+
+The correction and analysis stages keep each unit's R diagnostics in a `.log`
+beside its output; the sample-alignment drop counts there are the first thing
+to check when a cohort mismatch is suspected.
 
 The pipeline refuses to proceed on: a sample whose region count disagrees with
-the others, a chromosome absent from the input, a duplicated `SAMPLE` in the
-phenotype table, an output that fails its integrity check, and a correction
-stage that produces fewer rows than it read.
+the others, a manifest listing the same sample twice, a chromosome absent from
+the input, a duplicated `SAMPLE` in the phenotype table, an output that fails
+its integrity check, and a correction stage that produces fewer rows than it
+read.
 
 Contig names are resolved from the tabix index rather than assumed, so a matrix
 using `1` and one using `chr1` both work and a genuinely absent chromosome is an
@@ -216,7 +241,7 @@ error rather than an empty result.
 | phenotype manifest | `name`, `method`, `model`, tab-separated, `#` for comments |
 
 If your matrix column names are not plain sample identifiers, pass
-`--sampleIdPattern` — a PCRE whose first capture group is kept. There is no
+`--sampleIdPattern` after `--` — a PCRE whose first capture group is kept. There is no
 default rewriting: a built-in pattern that silently mangles identifiers is worse
 than none.
 
@@ -252,10 +277,11 @@ The simple sweep above is first-class. It does not model relatedness.
 
 For analyses that need a relatedness term, calibrated tests for imbalanced
 case/control phenotypes, or whole-genome-regression calibration, the corrected
-matrix is the seam: it can be exported as dosages for REGENIE or SAIGE, or fed
-to the GENESIS score test in [`R/external/`](R/external/) against a pre-fitted
-null model. Running the same phenotype both ways on the same corrected matrix is
-the strongest check either path gets.
+matrix is the seam. What exists today is the GENESIS score test in
+[`R/external/`](R/external/), run against a null model pre-fitted with
+`GENESIS::fitNullModel()`. A dosage export for REGENIE or SAIGE is designed but
+not yet built. Running the same phenotype both ways on the same corrected
+matrix is the strongest check either path gets.
 
 See [`PLAN.md`](PLAN.md) for the design and the current state of that work.
 
@@ -265,7 +291,7 @@ See [`PLAN.md`](PLAN.md) for the design and the current state of that work.
 
 ```bash
 docker build -t depthsv:dev .
-docker run --rm depthsv:dev tests/smoke_test.sh /tmp/s
+docker run --rm depthsv:dev /opt/depthsv/tests/smoke_test.sh /tmp/s
 ```
 
 The image pins R and a dated CRAN snapshot, so a rebuild resolves the same
@@ -285,6 +311,11 @@ Results are byte-identical between the container and a host run.
 
 `R.utils` is deliberately *not* required: gzipped input tables are decompressed
 through the shell so a base R install is enough.
+
+The scripts pin BLAS/OpenMP linear algebra to one thread per worker —
+parallelism comes from the worker fan-out, and a threaded BLAS underneath it
+would oversubscribe the node and make results depend on core count. Export the
+usual `*_NUM_THREADS` variables yourself to override.
 
 On a cluster, set `DSV_MODULES` to whatever your site calls these — the module
 names are not guessed, and the scripts check for the commands regardless.

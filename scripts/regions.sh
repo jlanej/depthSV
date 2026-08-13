@@ -17,6 +17,10 @@
 # chrom-sizes file (contig<TAB>length) because a tabix index does not record
 # contig lengths; empty intervals are skipped so the list never contains a unit
 # that would fail as "contains no rows".
+#
+# The emitted intervals partition the matrix rows: consecutive windows never
+# both contain the same bin, so concatenating per-window outputs yields each
+# region exactly once.
 # ---------------------------------------------------------------------------
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
@@ -49,20 +53,36 @@ fi
 [ -n "$sizes" ] || dsv_die "--window needs --sizes (a contig<TAB>length file)"
 dsv_require_file "$sizes"
 
+# Window boundaries must land on bin edges: regions are matched by overlap, so
+# a boundary falling inside a bin would hand that bin to both neighbouring
+# windows. Bins are fixed-size (the premise of the whole pipeline), so read the
+# bin size from the first data row and round the window up to a multiple of it.
+bin=$( set +o pipefail; gzip -cd "$matrix" | awk -F'\t' 'NR==2 {print $3-$2; exit}' )
+if [ -n "$bin" ] && [ "$bin" -gt 0 ] && [ $((window % bin)) -ne 0 ]; then
+    window=$(( (window / bin + 1) * bin ))
+    dsv_log "window rounded up to $window to align with the ${bin} bp bins"
+fi
+
 # Only contigs present in both the matrix and the sizes file, so the list can
 # never name a unit the matrix cannot serve.
 tabix -l "$matrix" > "$(dirname "$matrix")/.dsv.contigs.$$"
 trap 'rm -f "$(dirname "$matrix")/.dsv.contigs.$$"' EXIT
 
+# Windows are emitted as 1-based inclusive tabix queries. The matrix rows are
+# BED (0-based, half-open), and a tabix query [B,E] matches any feature that
+# overlaps it — so a window written as its 0-based start would also pick up
+# the bin that ENDS exactly there, duplicating one bin at every boundary.
+# Emitting [s+1, s+w] for a 0-based window start s makes consecutive windows
+# a partition: a bin ending on a boundary belongs to the earlier window only.
 awk -v w="$window" -v matrix="$matrix" '
   NR == FNR { present[$1] = 1; next }
   {
     contig = $1; len = $2 + 0
     if (!(contig in present) || len <= 0) next
     for (s = 0; s < len; s += w) {
-      e = s + w - 1
-      if (e >= len) e = len - 1
-      print contig ":" s "-" e
+      e = s + w
+      if (e > len) e = len
+      print contig ":" (s + 1) "-" e
     }
   }
 ' "$(dirname "$matrix")/.dsv.contigs.$$" "$sizes" \

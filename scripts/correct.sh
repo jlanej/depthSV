@@ -62,6 +62,12 @@ if [ "$force" -eq 0 ] && dsv_output_complete "$final"; then
 fi
 dsv_output_reset "$final"
 
+# R worker diagnostics — the [align] sample-drop counts, rank warnings and any
+# real error — go to a per-unit log rather than /dev/null. A wrong
+# --sampleIdPattern that silently drops most of the cohort is visible here.
+log="$out_dir/corrected_ndim${ndim}.${slug}.log"
+: > "$log"
+
 # Column header of the matrix, needed by every parallel chunk.
 header_file="$(mktemp "${TMPDIR:-/tmp}/dsv.header.XXXXXX")"
 stats_dir="$(mktemp -d "${TMPDIR:-/tmp}/dsv.stats.XXXXXX")"
@@ -84,19 +90,31 @@ dsv_read_region "$matrix" "$region" | head -n 1 > "$probe_row"
 # array is an error on bash 3.2, which is what macOS still ships.
 { cat "$header_file" "$probe_row"; } \
   | Rscript "$rscript" --inputPCs "$pcs" --inputFile - --coverageStats "$coverage" \
-      --ndim "$ndim" ${extra[@]+"${extra[@]}"} 2>/dev/null | head -n 1 > "$out_header"
+      --ndim "$ndim" ${extra[@]+"${extra[@]}"} 2>>"$log" | head -n 1 > "$out_header"
 set -o pipefail
-[ -s "$out_header" ] || dsv_die "could not derive the output header from $rscript"
+[ -s "$out_header" ] || dsv_die "could not derive the output header from $rscript (see $log)"
+
+# The probe succeeded, so what it logged is only the SIGPIPE noise from having
+# its output truncated by `head`. Clear it: the log should hold the workers'
+# real diagnostics, not an expected artefact that reads like an error.
+: > "$log"
 
 chunk="$(dsv_chunk_lines "$probe_row" "$chunk")"
+
+# The worker command is a string a worker shell parses, so every interpolated
+# value is quoted with dsv_q. {#} is GNU parallel's job number and must stay
+# bare for the per-chunk stats files.
+extra_q=""
+[ ${#extra[@]} -eq 0 ] || extra_q="$(printf '%q ' "${extra[@]}")"
+worker="cat $(dsv_q "$header_file") - | Rscript $(dsv_q "$rscript") \
+  --inputPCs $(dsv_q "$pcs") --inputFile - --coverageStats $(dsv_q "$coverage") \
+  --ndim $(dsv_q "$ndim") --skipOutputHeader \
+  --statsFile $(dsv_q "$stats_dir")/stats.{#}.txt ${extra_q}2>>$(dsv_q "$log")"
 
 (
     cat "$out_header"
     dsv_read_region "$matrix" "$region" \
-      | parallel "${DSV_PARALLEL_FLAGS[@]}" --block "$DSV_BLOCK_BYTES" -L "$chunk" -j "$jobs" \
-          "cat '$header_file' - | Rscript '$rscript' --inputPCs '$pcs' --inputFile - \
-             --coverageStats '$coverage' --ndim '$ndim' \
-             --skipOutputHeader --statsFile '$stats_dir/stats.{#}.txt' ${extra[*]+${extra[*]}} 2>/dev/null"
+      | parallel "${DSV_PARALLEL_FLAGS[@]}" --block "$DSV_BLOCK_BYTES" -L "$chunk" -j "$jobs" "$worker"
 ) | bgzip -@ "$threads" > "$(dsv_output_tmp "$final")"
 
 # Merge the per-chunk statistics BEFORE committing the main output. The .done
