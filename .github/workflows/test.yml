@@ -7,26 +7,68 @@ on:
 
 jobs:
   smoke:
+    name: suite on the runner
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install system dependencies
+      # R packages come from apt rather than install.packages(): the runner is
+      # not root, so installing into the system library fails outright, and the
+      # precompiled packages avoid a CRAN build on every run.
+      - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y tabix parallel r-base
+          sudo apt-get install -y --no-install-recommends \
+            tabix parallel r-base \
+            r-cran-optparse r-cran-data.table r-cran-survival
 
-      - name: Install R packages
+      - name: Report versions
         run: |
-          Rscript -e 'install.packages(c("optparse","data.table","survival"), repos="https://cloud.r-project.org")'
+          R --version | head -1
+          bgzip --version | head -1
+          parallel --version | head -1
+          Rscript -e 'for (p in c("optparse","data.table","survival"))
+                        cat(p, as.character(packageVersion(p)), "\n")'
 
       - name: Shell syntax
         run: |
-          for f in lib/*.sh scripts/*.sh tests/*.sh; do bash -n "$f"; done
+          for f in lib/*.sh scripts/*.sh tests/*.sh workflows/*.sh; do
+            bash -n "$f" || exit 1
+          done
 
       - name: R syntax
         run: |
-          for f in R/*.R tests/*.R; do Rscript -e "invisible(parse('$f'))"; done
+          for f in R/*.R R/external/*.R tests/*.R; do
+            Rscript -e "invisible(parse('$f'))" || exit 1
+          done
 
       - name: End-to-end smoke test
         run: tests/smoke_test.sh
+
+  container:
+    name: suite in the container
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The container is the artefact the cloud platforms actually run, and it
+      # has already caught defects the host run could not: a base R install has
+      # no R.utils, so gzipped input tables failed there first.
+      - name: Build image
+        run: docker build -t depthsv:ci .
+
+      - name: End-to-end smoke test in the image
+        run: docker run --rm depthsv:ci /opt/depthsv/tests/smoke_test.sh /tmp/ci
+
+  workflow-lint:
+    name: WDL check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check the WDL parses and type-checks
+        run: |
+          pip install --quiet miniwdl
+          miniwdl check workflows/depthsv.wdl
