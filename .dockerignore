@@ -1,0 +1,10 @@
+.git
+.github
+.idea
+.venv
+tests/fixtures
+work
+results
+*.md
+Dockerfile
+.dockerignore

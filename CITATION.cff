@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+title: depthSV
+message: If you use this software, please cite it as below.
+type: software
+abstract: >-
+  Association testing of sequencing read depth against phenotypes at biobank
+  scale. Joins per-sample depth over fixed genomic bins, corrects for technical
+  structure using principal components, and tests each bin against one or more
+  phenotypes, producing association summary statistics.
+authors:
+  - name: depthSV contributors
+license: MIT
+keywords:
+  - copy number variation
+  - structural variation
+  - read depth
+  - genome-wide association study
+  - biobank

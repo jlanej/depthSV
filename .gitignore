@@ -1,0 +1,42 @@
+# IDE / editor state
+.idea/
+.vscode/
+*.iml
+.Rproj.user/
+*.Rproj
+
+# Environments
+.venv/
+renv/library/
+.Rhistory
+.RData
+.Ruserdata
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Site-local configuration (copy conf/example.env and edit; never commit the copy)
+*.local.env
+conf/*.env
+!conf/example.env
+
+# Pipeline outputs and data — nothing generated should ever be committed
+results/
+work/
+*.regions.bed.gz
+*.regions.bed.gz.tbi
+meta.input.join*.gz
+corrected_ndim*
+stats_ndim*
+analysis_ndim*
+*.done
+*.tbi
+*.log
+*.out
+*.err
+slurm-*.out
+
+# Test scratch
+tests/fixtures/
+tests/scratch/

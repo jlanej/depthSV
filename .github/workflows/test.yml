@@ -1,0 +1,32 @@
+name: test
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tabix parallel r-base
+
+      - name: Install R packages
+        run: |
+          Rscript -e 'install.packages(c("optparse","data.table","survival"), repos="https://cloud.r-project.org")'
+
+      - name: Shell syntax
+        run: |
+          for f in lib/*.sh scripts/*.sh tests/*.sh; do bash -n "$f"; done
+
+      - name: R syntax
+        run: |
+          for f in R/*.R tests/*.R; do Rscript -e "invisible(parse('$f'))"; done
+
+      - name: End-to-end smoke test
+        run: tests/smoke_test.sh

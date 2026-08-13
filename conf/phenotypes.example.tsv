@@ -1,0 +1,18 @@
+# depthSV phenotype manifest
+#
+# One row per analysis. Tab-separated, three columns:
+#
+#   name    a short label used in the output filename
+#   method  linear | logistic | coxph
+#   model   an R formula; the depth term must be named cov_resids
+#
+# Adding a phenotype is a row here. Re-running skips analyses that already
+# completed, so a sweep can be extended without repeating finished work.
+#
+# Column names must exist in the phenotype table passed as --pheno.
+#
+#name	method	model
+quant_trait	linear	quant_trait~cov_resids+age+sex+ancestry_PC1+ancestry_PC2
+null_trait	linear	null_trait~cov_resids+age+sex+ancestry_PC1+ancestry_PC2
+case_status	logistic	case_status~cov_resids+age+sex+ancestry_PC1+ancestry_PC2
+survival	coxph	Surv(time,event)~cov_resids+age+sex
