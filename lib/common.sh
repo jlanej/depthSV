@@ -21,6 +21,17 @@ set -euo pipefail
 DSV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export DSV_ROOT
 
+# Pin linear-algebra threading to one thread per worker. Parallelism here comes
+# from GNU parallel fanning out workers, so a threaded BLAS (OpenBLAS is common
+# on clusters) multiplies: jobs x cores threads thrash the node. Pinning also
+# keeps floating-point summation order — and therefore the output bytes —
+# independent of how many cores the host happens to have. Already-set values
+# are respected so a site can override deliberately.
+export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
+export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
+export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
+export VECLIB_MAXIMUM_THREADS="${VECLIB_MAXIMUM_THREADS:-1}"
+
 # --- logging ---------------------------------------------------------------
 
 # ISO-8601 UTC. `date -Is` is GNU-only and fails on BSD/macOS, which matters
@@ -172,6 +183,22 @@ dsv_output_commit() {              # dsv_output_commit <finalPath> [expected_bod
     mv "${tmp}.tbi" "${final}.tbi"
     echo "done" > "$(dsv_output_done "$final")"
     dsv_log "wrote $final"
+}
+
+# Shell-quote one value for embedding in a command string that a worker shell
+# will parse (the GNU parallel templates below). Interpolating values raw broke
+# any passthrough argument containing shell metacharacters — which is every
+# realistic --sampleIdPattern, since PCREs are made of them.
+dsv_q() { printf '%q' "$1"; }
+
+# Sample name from a mosdepth file path: the basename with mosdepth's suffixes
+# removed. Lives here because the join driver and its extraction worker must
+# agree on it exactly.
+dsv_sample_name() {
+    local b="${1##*/}"
+    b="${b%.gz}"; b="${b%.bed}"; b="${b%.regions}"
+    b="${b%.by1000}"; b="${b%.src}"
+    printf '%s\n' "$b"
 }
 
 # --- parallel --------------------------------------------------------------

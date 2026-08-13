@@ -47,6 +47,45 @@ check "matrix is tabix-indexed" "$([ -s "$matrix.tbi" ] && echo yes || echo no)"
 check "matrix has both contigs"  "$(tabix -l "$matrix" | tr '\n' ' ' | sed 's/ $//')" "chr1 chr2"
 check "manifest records regions" "$(awk -F'\t' '$1=="regions"{print $2}' "$work/join/depth.matrix.manifest")" "400"
 
+# Re-running a completed join must be a no-op.
+before="$(dsv_mtime "$matrix")"
+bash "$DSV_ROOT/scripts/join.sh" --manifest "$fixtures/mosdepth.input.txt" \
+     --out "$work/join" --threads 2 >>"$work/join.log" 2>&1
+after="$(dsv_mtime "$matrix")"
+check "completed join is not redone" "$before" "$after"
+
+# The matrix must not depend on how the work was batched or parallelised.
+bash "$DSV_ROOT/scripts/join.sh" --manifest "$fixtures/mosdepth.input.txt" \
+     --out "$work/join.alt" --batch-size 7 --jobs 3 --threads 2 >"$work/join.alt.log" 2>&1 \
+  && cmp -s "$work/join.alt/depth.matrix.txt.gz" "$matrix" \
+  && ok "matrix is byte-identical across batching and job counts" \
+  || bad_log "matrix depends on batching" "$work/join.alt.log"
+
+# A windowed region list must partition the matrix — every bin in exactly one
+# window — including when the requested window is not a multiple of the bin
+# size (it is rounded up to a bin edge).
+printf 'chr1\t200000\nchr2\t200000\n' > "$work/chrom.sizes"
+bash "$DSV_ROOT/scripts/regions.sh" --matrix "$matrix" --window 2500 \
+     --sizes "$work/chrom.sizes" > "$work/regions.win.txt" 2>/dev/null
+win_rows=0
+: > "$work/win.keys"
+while IFS= read -r r; do
+    win_rows=$(( win_rows + $(tabix "$matrix" "$r" | wc -l) ))
+    tabix "$matrix" "$r" | cut -f1,2 >> "$work/win.keys"
+done < "$work/regions.win.txt"
+check "windowed regions cover every bin exactly once" "$win_rows" "400"
+check "  and contain no duplicate bins" "$(sort "$work/win.keys" | uniq -d | wc -l | tr -d ' ')" "0"
+
+# The same sample listed twice must be refused before any pasting: it would
+# become two columns under one name, and later stages match columns by name.
+{ cat "$fixtures/mosdepth.input.txt"; head -1 "$fixtures/mosdepth.input.txt"; } > "$work/dupman.txt"
+if bash "$DSV_ROOT/scripts/join.sh" --manifest "$work/dupman.txt" \
+        --out "$work/dupjoin" >/dev/null 2>&1; then
+    bad "join accepted a manifest listing the same sample twice"
+else
+    ok "join refuses a duplicated sample in the manifest"
+fi
+
 # A sample built against different intervals must be refused, not silently
 # pasted into the wrong coordinates.
 mkdir -p "$work/bad/mosdepth"; cp "$fixtures"/mosdepth/*.gz "$work/bad/mosdepth/"
@@ -75,6 +114,8 @@ check "corrected rows (chr1)" \
       "$(bgzip -dc "$work/corrected/corrected_ndim4.chr1.txt.gz" | grep -cv '^#')" "200"
 check "per-region stats written" \
       "$([ -s "$work/corrected/stats_ndim4.chr1.txt.gz" ] && echo yes || echo no)" "yes"
+check "worker log written" \
+      "$([ -f "$work/corrected/corrected_ndim4.chr1.log" ] && echo yes || echo no)" "yes"
 
 # Re-running a completed unit must be a no-op, which is what makes a preempted
 # job cheap to retry.
@@ -191,6 +232,18 @@ if bgzip -dc "$work/corrected/corrected_ndim4.chr1.txt.gz" \
 else
     bad "gzipped phenotype table failed"
 fi
+
+# Passthrough arguments full of regex metacharacters must reach the R workers
+# intact — they are interpolated into a worker shell command, and an unquoted
+# interpolation once made any real --sampleIdPattern a syntax error there.
+bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$fixtures/svd.pcs.txt" \
+    --coverage "$fixtures/autosomal.median.txt" --region chr1 --out "$work/pattern" \
+    --ndim 4 --jobs 2 --chunk 100 -- --sampleIdPattern '(SAMPLE[0-9]+)' \
+    >"$work/pattern.log" 2>&1 \
+  && cmp -s <(bgzip -dc "$work/pattern/corrected_ndim4.chr1.txt.gz") \
+            <(bgzip -dc "$work/corrected/corrected_ndim4.chr1.txt.gz") \
+  && ok "regex --sampleIdPattern passes through to the workers" \
+  || bad_log "regex --sampleIdPattern passthrough failed" "$work/pattern.log"
 
 # The two projection routes must agree. `explicit` is 12-20x faster but is a
 # different floating-point path, so the equivalence is enforced here rather

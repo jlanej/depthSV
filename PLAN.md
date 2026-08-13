@@ -41,7 +41,17 @@ Phases 0-2 are complete and are now described by the code and the test suite
 rather than by this file. In summary: the repository was consolidated into a
 single source of truth, five reproduced bugs were fixed, the join moved to
 `bgzip`+`tabix` with contig names resolved from the index, a region became the
-unit of work, and `tests/smoke_test.sh` asserts on results across 26 checks.
+unit of work, and `tests/smoke_test.sh` asserts on results across 35 checks.
+
+Since then, the join was reworked for scale — parallel extraction, batch sizes
+chosen against the open-file limit, scratch bounded near two batches of
+columns, and resume from the last finished batch — with output verified
+byte-identical to the original implementation. Windowed region lists were made
+an exact partition of the matrix (a bin ending on a window boundary previously
+landed in two units), passthrough arguments now survive shell quoting on the
+way to the R workers, worker diagnostics land in per-unit logs instead of
+/dev/null, and BLAS threading is pinned so results do not depend on host core
+count.
 
 Both engines were verified against the originals — linear and logistic agree to
 ~1e-13, and the correction is exact against an independent recomputation.
@@ -100,8 +110,8 @@ and a known locus is recovered at the expected strength.
 - `scripts/regions.sh` emits the region list both dispatchers consume, read
   from the tabix index so it matches the matrix rather than an assumed karyotype.
 
-**Gate: met.** The suite passes inside the container (27 assertions) and results
-are byte-identical to a host run. The container caught one real portability
+**Gate: met.** The suite passes inside the container and results are
+byte-identical to a host run. The container caught one real portability
 defect — `fread()` cannot read `.gz` without the `R.utils` package, so a gzipped
 phenotype table failed on a clean R; both engines now decompress through the
 shell.

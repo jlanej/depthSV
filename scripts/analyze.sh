@@ -86,9 +86,17 @@ set -o pipefail
 chunk="$(dsv_chunk_lines "$probe_row" "$chunk")"
 
 # --- one phenotype ---------------------------------------------------------
+
+# Passthrough args are re-quoted with %q because the worker command below is a
+# string a worker shell parses; interpolating them raw broke any argument
+# containing shell metacharacters (every realistic --sampleIdPattern).
+extra_q=""
+[ ${#extra[@]} -eq 0 ] || extra_q="$(printf '%q ' "${extra[@]}")"
+
 run_one() {                        # run_one <name> <method> <model>
     local name="$1" meth="$2" form="$3"
     local final="$out_dir/${name}.${meth}.${slug}.txt.gz"
+    local log="$out_dir/${name}.${meth}.${slug}.log"
 
     if [ "$force" -eq 0 ] && dsv_output_complete "$final"; then
         dsv_log "already complete, skipping: $(basename "$final")"
@@ -96,22 +104,33 @@ run_one() {                        # run_one <name> <method> <model>
     fi
     dsv_output_reset "$final"
 
+    # R worker diagnostics — the [align] sample-drop counts and any real
+    # error — go to a per-analysis log rather than /dev/null.
+    : > "$log"
+
     set +o pipefail
     cat "$header_file" "$probe_row" \
       | Rscript "$rscript" -f - -p "$pheno" -m "$form" -r "$meth" \
-          ${extra[@]+"${extra[@]}"} 2>/dev/null | head -n 1 > "$out_header"
+          ${extra[@]+"${extra[@]}"} 2>>"$log" | head -n 1 > "$out_header"
     set -o pipefail
-    [ -s "$out_header" ] || dsv_die "could not derive the output header for $name; check the model formula against the phenotype table"
+    [ -s "$out_header" ] || dsv_die "could not derive the output header for $name; check the model formula against the phenotype table (see $log)"
+
+    # The probe succeeded, so what it logged is only the SIGPIPE noise from
+    # having its output truncated by `head`. Clear it: the log should hold the
+    # workers' real diagnostics, not an expected artefact.
+    : > "$log"
 
     # Regions are legitimately dropped by the QC filters, so the row count is
     # not a parity check here — completeness is enforced by --halt now,fail=1
     # plus the integrity check in dsv_output_commit.
+    local worker
+    worker="cat $(dsv_q "$header_file") - | Rscript $(dsv_q "$rscript") \
+      -f - -p $(dsv_q "$pheno") -m $(dsv_q "$form") -r $(dsv_q "$meth") \
+      ${extra_q}2>>$(dsv_q "$log") | tail -n +2"
     (
         cat "$out_header"
         dsv_read_region "$corrected" "$region" \
-          | parallel "${DSV_PARALLEL_FLAGS[@]}" --block "$DSV_BLOCK_BYTES" -L "$chunk" -j "$jobs" \
-              "cat '$header_file' - | Rscript '$rscript' -f - -p '$pheno' -m '$form' -r '$meth' \
-                 ${extra[*]+${extra[*]}} 2>/dev/null | tail -n +2"
+          | parallel "${DSV_PARALLEL_FLAGS[@]}" --block "$DSV_BLOCK_BYTES" -L "$chunk" -j "$jobs" "$worker"
     ) | bgzip -@ "$threads" > "$(dsv_output_tmp "$final")"
 
     dsv_output_commit "$final"
