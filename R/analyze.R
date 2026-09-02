@@ -65,6 +65,12 @@ option_list <- list(
               help = "rank-based inverse-normal transform of a quantitative response (linear only)"),
   make_option("--robust", action = "store_true", default = FALSE,
               help = "heteroskedasticity-robust (HC1) SE for linear; robust variance for coxph"),
+  make_option("--perms", type = "integer", default = 0L,
+              help = "permutations of the response for a max-|t| null over this input (linear only) [default %default]"),
+  make_option("--permSeed", type = "integer", default = 1L,
+              help = "seed of the permutations; every shard of a run must use the same [default %default]"),
+  make_option("--permOut", type = "character", default = NULL,
+              help = "file for the per-permutation max |t| (with --perms)"),
   make_option("--minObs", type = "integer", default = 100,
               help = "skip a region with fewer complete observations [default %default]"),
   make_option("--minCases", type = "integer", default = 20,
@@ -99,6 +105,9 @@ if (opt$ndim > 0 && is.null(opt$pcs)) {
 }
 if (!opt$projection %in% c("explicit", "qr")) stop("--projection must be 'explicit' or 'qr'", call. = FALSE)
 if (opt$rankInt && opt$regressionMethod != "linear") stop("--rankInt applies to linear models only", call. = FALSE)
+if (opt$perms < 0) stop("--perms must be >= 0", call. = FALSE)
+if (opt$perms > 0 && opt$regressionMethod != "linear") stop("--perms is available for linear models only", call. = FALSE)
+if (opt$perms > 0 && is.null(opt$permOut)) stop("--perms needs --permOut", call. = FALSE)
 # Only the Cox path needs it, and every parallel chunk pays the load cost.
 if (opt$regressionMethod == "coxph") suppressPackageStartupMessages(library(survival))
 
@@ -284,7 +293,9 @@ make_projector <- function(Zm) {
        vec   = if (opt$projection == "explicit") function(v) as.numeric(v - Qm %*% crossprod(Qm, v))
                else function(v) as.numeric(qr.resid(q, v)),
        block = if (opt$projection == "explicit") function(M) M - (M %*% Qm) %*% t(Qm)
-               else function(M) t(apply(M, 1L, function(v) qr.resid(q, v))))
+               else function(M) t(apply(M, 1L, function(v) qr.resid(q, v))),
+       cols  = if (opt$projection == "explicit") function(M) M - Qm %*% crossprod(Qm, M)
+               else function(M) qr.resid(q, M))
 }
 proj <- make_projector(Z)
 
@@ -315,6 +326,25 @@ if (opt$regressionMethod == "linear") {
   aligned[[response]][base_rows] <- ev_bin
 }
 
+# --- permutations (linear only) -------------------------------------------
+# Freedman-Lane: the covariate-adjusted response is permuted, projected
+# again, and the largest |t| over this input's regions is kept per
+# permutation. The permutations come from --permSeed over the usable
+# samples in matrix order, so every shard of a run permutes identically and
+# the per-shard maxima combine into one genome-wide max-T distribution
+# (scripts/export.sh). Computed on the classical t, also under --robust.
+n_perm <- opt$perms
+perm_idx <- NULL
+if (n_perm > 0) {
+  set.seed(opt$permSeed)
+  perm_idx <- vapply(seq_len(n_perm), function(b) sample.int(n_use), integer(n_use))
+}
+perm_max <- rep(0, n_perm)
+perm_columns <- function(y_res_s, proj_s, idx) {  # permuted, re-projected responses (n x B)
+  Yp <- proj_s$cols(matrix(y_res_s[idx], nrow(idx), n_perm))
+  list(Yp = Yp, yyp = colSums(Yp^2))
+}
+
 # Subset designs, for regions with missing samples. One-entry cache: the
 # missing set is the same for every region of the same kind (chrY).
 sub_cache <- list(mask = NULL)
@@ -325,6 +355,12 @@ subset_design <- function(mask) {
     s$df <- s$n - s$proj$rank - 1L
     s$y_res <- s$proj$vec(as.numeric(y_vec[mask]))
     s$yy <- sum(s$y_res^2)
+    if (n_perm > 0 && s$df >= 1L) {
+      # The global permutation restricted to the subset, as ranks, is a
+      # permutation of the subset — the same one in every shard.
+      idx_s <- apply(perm_idx[mask, , drop = FALSE], 2L, rank, ties.method = "first")
+      s[c("Yp", "yyp")] <- perm_columns(s$y_res, s$proj, idx_s)
+    }
   } else if (opt$regressionMethod == "logistic") {
     s$X_fixed <- X_fixed[mask, , drop = FALSE]
     s$y <- y_bin[mask]
@@ -336,6 +372,7 @@ subset_design <- function(mask) {
 full_design <- list(mask = rep(TRUE, n_use), n = n_use, proj = proj)
 if (opt$regressionMethod == "linear") {
   full_design$df <- df_res; full_design$y_res <- y_res; full_design$yy <- yy_res
+  if (n_perm > 0) full_design[c("Yp", "yyp")] <- perm_columns(y_res, proj, perm_idx)
 } else if (opt$regressionMethod == "logistic") {
   full_design$X_fixed <- X_fixed; full_design$y <- y_bin
   full_design$dev_null <- suppressWarnings(glm.fit(X_fixed[, -depth_col, drop = FALSE], y_bin, family = binomial()))$deviance
@@ -366,7 +403,12 @@ fit_linear_one <- function(g, s) {
   e <- s$y_res - beta * x_res
   se <- if (opt$robust) sqrt(sum(x_res^2 * e^2) / xx^2 * s$n / s$df) else sqrt((sum(e^2) / s$df) / xx)
   tval <- beta / se
-  list(vals = c(beta, se, tval, 2 * pt(-abs(tval), s$df), log10p_t(tval, s$df)), share = share)
+  pm <- NULL
+  if (n_perm > 0 && !is.null(s$Yp)) {
+    bp <- as.numeric(crossprod(s$Yp, x_res)) / xx
+    pm <- abs(bp) / sqrt(((s$yyp - bp^2 * xx) / s$df) / xx)
+  }
+  list(vals = c(beta, se, tval, 2 * pt(-abs(tval), s$df), log10p_t(tval, s$df)), share = share, perm = pm)
 }
 
 fit_logistic_one <- function(g, s) {
@@ -475,6 +517,13 @@ repeat {
                    fmt(share[keepi]))
       writeLines(apply(out, 1L, paste, collapse = "\t"))
       n_out <- n_out + length(keepi)
+      if (n_perm > 0) {
+        # One product for every region x permutation; the tested regions only.
+        bp   <- (Dr[keepi, , drop = FALSE] %*% full_design$Yp) / xx[keepi]
+        rssp <- matrix(full_design$yyp, nrow = length(keepi), ncol = n_perm, byrow = TRUE) - bp^2 * xx[keepi]
+        tp   <- abs(bp) / sqrt((rssp / df_res) / xx[keepi])
+        perm_max <- pmax(perm_max, apply(tp, 2L, max))
+      }
     }
     todo <- which(ok & !complete)
   } else {
@@ -494,7 +543,16 @@ repeat {
     if (r$share > opt$maxShare) { n_share <- n_share + 1L; next }
     emit(meta[i, ], n_obs[i], s, r)
     n_out <- n_out + 1L
+    if (n_perm > 0 && !is.null(r$perm)) perm_max <- pmax(perm_max, r$perm)
   }
+}
+
+if (n_perm > 0) {
+  writeLines(c(sprintf("#perms=%d", n_perm), sprintf("#seed=%d", opt$permSeed), sprintf("#df=%d", df_res),
+               sprintf("#regions=%d", n_out), "#stat=classical |t| under Freedman-Lane permutation of the response",
+               "perm\tmax_abs_stat",
+               sprintf("%d\t%s", seq_len(n_perm), formatC(perm_max, digits = 8, format = "g"))),
+             opt$permOut)
 }
 
 message(sprintf("[done] processed=%d skipped=%d single_sample=%d err=%d", n_out, n_skipped, n_share, n_error))

@@ -252,6 +252,14 @@ dsv_output_commit() {              # dsv_output_commit <finalPath> [expected_bod
 # realistic --sampleIdPattern, since PCREs are made of them.
 dsv_q() { printf '%q' "$1"; }
 
+# Fold permutation-maxima files (perm<TAB>max_abs_stat, '#' comments) into
+# the element-wise maximum per permutation, on stdout. Used per shard over
+# its chunks and at export over the shards.
+dsv_perm_fold() {                  # dsv_perm_fold <file>...
+    cat "$@" | grep -v -e '^#' -e '^perm' | sort -k1,1n \
+      | awk -F'\t' 'BEGIN{OFS="\t"} $1!=cur {if (NR>1) print cur, mx; cur=$1; mx=$2+0; next} $2+0>mx {mx=$2+0} END{if (NR) print cur, mx}'
+}
+
 # Sample name from a mosdepth file path: the basename with mosdepth's suffixes
 # removed — `.regions.bed.gz`, then a `.by<binsize>` prefix suffix of any bin
 # size. Lives here because the join driver and its extraction worker must

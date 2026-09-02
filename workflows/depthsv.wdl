@@ -24,6 +24,11 @@ workflow depthsv {
     Int    ndim       = 16
     Int    min_obs    = 100
     Float  max_share  = 0.5
+    # Permutation maxima per shard (linear analyses) for scripts/export.sh's
+    # empirical threshold; 0 disables. The export itself runs once on the
+    # collected shards, outside this scatter.
+    Int    perms      = 0
+    Int    perm_seed  = 1
     # Ploidy model for chrX/chrY: a sex table (SAMPLE + sex_col, M/F or 1/2)
     # and the pseudo-autosomal BED for the build (conf/par.grch38.bed).
     File?  sex
@@ -62,6 +67,7 @@ workflow depthsv {
         pheno_manifest = pheno_manifest,
         pcs = pcs, ndim = ndim,
         region = region, min_obs = min_obs, max_share = max_share,
+        perms = perms, perm_seed = perm_seed,
         docker = docker, cpu = analyze_cpu, mem_gb = analyze_mem_gb,
         disk_gb = disk_gb, preemptible = preemptible
     }
@@ -71,8 +77,9 @@ workflow depthsv {
     Array[File] corrected      = correct.corrected
     Array[File] correction_stats = correct.stats
     # One file per (region x analysis); flattened so the caller sees a single
-    # list of summary-statistic shards to concatenate.
+    # list of summary-statistic shards for scripts/export.sh.
     Array[File] sumstats       = flatten(analyze.sumstats)
+    Array[File] permutation_maxima = flatten(analyze.permmax)
   }
 }
 
@@ -143,6 +150,8 @@ task analyze {
     String region
     Int min_obs
     Float max_share
+    Int perms
+    Int perm_seed
     String docker
     Int cpu
     Int mem_gb
@@ -164,12 +173,14 @@ task analyze {
       --region "~{region}" \
       --out out \
       --min-obs ~{min_obs} --max-share ~{max_share} \
+      --perms ~{perms} --perm-seed ~{perm_seed} \
       --jobs ~{cpu} \
       --threads ~{cpu}
   >>>
 
   output {
     Array[File] sumstats = glob("out/*.txt.gz")
+    Array[File] permmax  = glob("out/*.permmax.txt")
   }
 
   runtime {

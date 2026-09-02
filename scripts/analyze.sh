@@ -6,11 +6,18 @@
 #                      --method linear|logistic|coxph \
 #                      --region chr1[:start-end] --out DIR \
 #                      [--pcs FILE] [--ndim K] [--case-level L] [--min-cases N] \
-#                      [--max-share X] [--rank-int] [--robust]
+#                      [--max-share X] [--rank-int] [--robust] \
+#                      [--perms B [--perm-seed S]]
 #
 # This replaces the three near-identical wrappers that differed only by their
 # regression method and their defaults. Everything site-specific belongs in an
 # env file (see conf/example.env), not here.
+#
+# --perms B (linear only) also writes <name>.<method>.<region>.permmax.txt:
+# the largest |t| over this region's tested bins for each of B permutations
+# of the covariate-adjusted response. Every shard of a run uses the same
+# seed, so scripts/export.sh can combine the shard maxima into one
+# genome-wide max-T distribution and an empirical family-wise threshold.
 #
 # Phenotype sweeps: pass --pheno-manifest instead of --model/--method to run a
 # tab-separated table of `name<TAB>method<TAB>model[<TAB>flags]` rows against
@@ -29,6 +36,7 @@ jobs="${DSV_JOBS:-4}"; chunk="${DSV_CHUNK:-2000}"; threads="${DSV_THREADS:-2}"
 min_obs="${DSV_MIN_OBS:-}"; min_var="${DSV_MIN_VARIANCE:-}"
 pcs="${DSV_PCS:-}"; ndim=""; case_level=""; min_cases="${DSV_MIN_CASES:-}"
 max_share="${DSV_MAX_SHARE:-}"; rank_int=0; robust=0
+perms="${DSV_PERMS:-0}"; perm_seed="${DSV_PERM_SEED:-1}"
 force=0; extra=(); model_flag=0; manifest_flag=0
 
 while [ $# -gt 0 ]; do
@@ -48,6 +56,8 @@ while [ $# -gt 0 ]; do
         --max-share)      max_share="$2"; shift 2 ;;
         --rank-int)       rank_int=1;     shift ;;
         --robust)         robust=1;       shift ;;
+        --perms)          perms="$2";     shift 2 ;;
+        --perm-seed)      perm_seed="$2"; shift 2 ;;
         --jobs)           jobs="$2";      shift 2 ;;
         --chunk)          chunk="$2";     shift 2 ;;
         --threads)        threads="$2";   shift 2 ;;
@@ -152,11 +162,23 @@ run_one() {                        # run_one <name> <method> <model> [defaulted_
     local extra_q=""
     [ ${#extra[@]} -eq 0 ] || extra_q="$(printf '%q ' "${extra[@]}")"
 
+    # Permutation maxima: linear models only; the workers write one file per
+    # chunk and they are folded into one per shard below.
+    local permmax="$out_dir/${name}.${meth}.${slug}.permmax.txt" perm_dir="" perm_q="" n_perm=0
+    if [ "$perms" -gt 0 ] && [ "$meth" = linear ]; then
+        n_perm="$perms"
+        perm_dir="$(mktemp -d "${TMPDIR:-/tmp}/dsv.perm.XXXXXX")"
+        # ${perm_dir:-}: the trap fires after this function's locals are gone.
+        trap 'rm -rf "$header_file" "$probe_row" "$out_header" "${perm_dir:-}"' EXIT
+        perm_q="--perms $(dsv_q "$perms") --permSeed $(dsv_q "$perm_seed") --permOut $(dsv_q "$perm_dir")/perm.{#}.txt "
+    fi
+
     # Everything the result depends on but the filename does not carry.
-    sig="$(printf 'stage=analyze\ncorrected=%s\npheno=%s\npcs=%s\nndim=%s\nregion=%s\nmethod=%s\nmodel=%s\nextra=%s\nscript=%s\nrscript=%s' \
+    sig="$(printf 'stage=analyze\ncorrected=%s\npheno=%s\npcs=%s\nndim=%s\nregion=%s\nmethod=%s\nmodel=%s\nextra=%s\nperms=%s\nperm_seed=%s\nscript=%s\nrscript=%s' \
            "$(dsv_file_sig "$corrected")" "$(dsv_file_sig "$pheno")" \
            "$([ "$ndim" -eq 0 ] || dsv_file_sig "$pcs")" "$ndim" "$region" "$meth" "$form" \
-           "${extra[*]+"${extra[*]}"}" "$(dsv_script_sig "$0")" "$(dsv_script_sig "$rscript")")"
+           "${extra[*]+"${extra[*]}"}" "$n_perm" "$([ "$n_perm" -eq 0 ] || printf '%s' "$perm_seed")" \
+           "$(dsv_script_sig "$0")" "$(dsv_script_sig "$rscript")")"
 
     # A defaulted name is the response variable, so two models of the same
     # response would take turns overwriting one output. Refuse that rather
@@ -172,6 +194,7 @@ run_one() {                        # run_one <name> <method> <model> [defaulted_
         return 0
     fi
     dsv_output_reset "$final" "$force"
+    rm -f "$permmax"
 
     # R worker diagnostics — the [align] sample-drop counts and any real
     # error — go to a per-analysis log rather than /dev/null.
@@ -197,7 +220,7 @@ run_one() {                        # run_one <name> <method> <model> [defaulted_
     local worker
     worker="cat $(dsv_q "$header_file") - | Rscript $(dsv_q "$rscript") \
       -f - -p $(dsv_q "$pheno") -m $(dsv_q "$form") -r $(dsv_q "$meth") --skipOutputHeader \
-      ${extra_q}2>>$(dsv_q "$log")"
+      ${extra_q}${perm_q}2>>$(dsv_q "$log")"
     (
         cat "$out_header"
         dsv_read_region "$corrected" "$region" \
@@ -207,8 +230,26 @@ run_one() {                        # run_one <name> <method> <model> [defaulted_
     # A result with no rows is not a result. The QC filters can drop every
     # region of a small window legitimately, but at that point the caller
     # must say so explicitly rather than inherit a green run.
-    if [ "$(bgzip -dc "$(dsv_output_tmp "$final")" | grep -cv '^#')" -eq 0 ] && [ "${DSV_ALLOW_EMPTY:-0}" != "1" ]; then
+    local n_rows
+    n_rows="$(bgzip -dc "$(dsv_output_tmp "$final")" | grep -cv '^#' || true)"
+    if [ "$n_rows" -eq 0 ] && [ "${DSV_ALLOW_EMPTY:-0}" != "1" ]; then
         dsv_die "$name produced no result rows for $region (every region failed QC?). Set DSV_ALLOW_EMPTY=1 to accept an empty shard."
+    fi
+
+    # Fold the per-chunk permutation maxima into one file per shard (the
+    # element-wise maximum), BEFORE the marker that makes this unit complete.
+    if [ -n "$perm_dir" ]; then
+        local first
+        first="$(ls "$perm_dir"/perm.*.txt 2>/dev/null | head -n 1 || true)"
+        [ -n "$first" ] || dsv_die "no permutation maxima were written for $name over $region (see $log)"
+        {
+            grep '^#' "$first" | grep -v '^#regions='
+            printf '#regions=%s\n' "$n_rows"
+            printf 'perm\tmax_abs_stat\n'
+            dsv_perm_fold "$perm_dir"/perm.*.txt
+        } > "$permmax.tmp"
+        mv "$permmax.tmp" "$permmax"
+        rm -rf "$perm_dir"
     fi
 
     dsv_output_commit "$final" "" "$sig"

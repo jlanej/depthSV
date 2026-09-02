@@ -67,7 +67,7 @@ scripts/analyze.sh \
 
 ---
 
-## The three stages
+## The stages
 
 ### 1. Join — `scripts/join.sh`
 
@@ -169,6 +169,35 @@ count of one. `--rank-int` applies a rank-based inverse-normal transform to a
 quantitative response and `--robust` uses HC1 standard errors (linear) or the
 robust variance (Cox); both are also per-row manifest flags.
 
+`--perms B` (linear only) additionally writes, per shard, the largest |t|
+over the shard's tested regions for each of B permutations of the
+covariate-adjusted response (Freedman–Lane). Because the linear path is a
+projection, this is one extra matrix product per block. Every shard uses the
+same seed (`--perm-seed`), which is what lets the export step fold the shard
+maxima into one genome-wide distribution.
+
+### 4. Export — `scripts/export.sh`
+
+Turns the shards of one analysis (or of every row of a manifest) into a
+result. Every region in the list must have a finished shard — a lost array
+task is an error, not a shorter table, unless `--allow-missing`. The shards
+are concatenated in region order, bgzipped and indexed; rows whose `N`,
+`NCase` or `NControl` is below `--min-count` (default 20, the All of Us
+dissemination floor; 0 disables) are dropped and counted.
+
+The summary (`<name>.<method>.summary.tsv`) reports the genomic-control λ,
+the Bonferroni threshold and its hits, and — when the analysis ran with
+`--perms` — the empirical family-wise threshold at `--alpha` (the k-th
+largest permutation maximum, k = ⌊α(B+1)⌋, so B ≥ 19 at α = 0.05), the
+effective number of tests it implies (M_eff = log(1−α)/log(1−p_thr)), and
+the hits at that threshold. `<name>.<method>.hits.tsv` lists every region
+past either threshold with its adjusted p, (1 + #{maxima ≥ |t|})/(B+1).
+
+```bash
+scripts/export.sh --results work/assoc --regions regions.txt \
+                  --pheno-manifest conf/phenotypes.example.tsv --out work/export
+```
+
 ### Options
 
 Each stage takes its inputs and output directory as flags; `--help` on any of
@@ -185,6 +214,8 @@ them prints the full usage. The rest are these:
 | `--min-cases N` | analyze | refuse a binary or survival phenotype with fewer cases, controls or events (default 20) |
 | `--max-share X` | analyze | skip a region where one sample carries more than this share of the residual depth sum of squares (default 0.5) |
 | `--rank-int`, `--robust` | analyze | inverse-normal transform of the response; HC1 / robust variance. Per row in a manifest: fourth column `rank-int,robust` |
+| `--perms B`, `--perm-seed S` | analyze | permutation maxima per shard for the empirical threshold (linear; `DSV_PERMS`, `DSV_PERM_SEED`) |
+| `--min-count N`, `--alpha X`, `--allow-missing` | export | count suppression floor (default 20); family-wise level (0.05); tolerate missing shards |
 | `--pcs FILE`, `--ndim K` | analyze | the PC table and count the correction used; `k` defaults to the corrected file's name, the table to `DSV_PCS` |
 | `--case-level L` | analyze | which level of a two-level text response is the case |
 | `--sex FILE`, `--sex-col NAME` | correct | per-sample sex, turning on the ploidy model for chrX/chrY (`DSV_SEX`, `DSV_SEX_COL`) |
@@ -353,6 +384,12 @@ statistic collapses toward zero (Hauck–Donner) while the LRT does not, and
 quality-control filters are absent rather than reported as missing, so the row
 count is normally lower than the region count; a shard with no rows at all is
 an error unless `DSV_ALLOW_EMPTY=1`.
+
+The export step writes one such table per analysis over the whole region
+list, plus `.summary.tsv` (counts, suppression, λ, thresholds, M_eff),
+`.hits.tsv` and the folded `.permmax.txt`. The per-region correction
+statistics carry per-bin minima and maxima — single participants' values —
+and stay in the workspace; only the export is meant to leave it.
 
 ---
 

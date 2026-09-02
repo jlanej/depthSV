@@ -360,6 +360,68 @@ awk -v s="$share" 'BEGIN{exit !(s > 0.5 && s <= 1)}' \
   && ok "  --max-share 1 keeps it and reports MAXSHARE=$share" \
   || bad "  --max-share 1 did not report the outlier region's share (got '$share')"
 
+# Permutation maxima per shard, folded by the export step into an empirical
+# genome-wide threshold; coverage, ordering and count suppression there.
+for region in chr1 chr2; do
+    for ph in quant_trait null_trait; do
+        bash "$DSV_ROOT/scripts/analyze.sh" --corrected "$work/corrected/corrected_ndim4.${region}.txt.gz" \
+            --pheno "$pheno" --pcs "$pcs" --model "${ph}~cov_resids+age+sex" --name "${ph}_perm" \
+            --perms 200 --region "$region" --out "$work/perm" --jobs 2 --chunk 100 -- --minObs 30 \
+            >>"$work/perm.log" 2>&1 || bad_log "analysis with --perms failed on $region" "$work/perm.log"
+    done
+done
+check "permutation maxima written per shard" \
+      "$(grep -v -e '^#' -e '^perm' "$work/perm/quant_trait_perm.linear.chr1.permmax.txt" | grep -c .)" "200"
+printf 'chr1\nchr2\n' > "$work/export.regions"
+bash "$DSV_ROOT/scripts/export.sh" --results "$work/perm" --regions "$work/export.regions" \
+    --name quant_trait_perm --method linear --out "$work/export" --min-count 20 >"$work/export.log" 2>&1 \
+  || bad_log "export failed" "$work/export.log"
+bash "$DSV_ROOT/scripts/export.sh" --results "$work/perm" --regions "$work/export.regions" \
+    --name null_trait_perm --method linear --out "$work/export" --min-count 20 >>"$work/export.log" 2>&1 \
+  || bad_log "export of the null failed" "$work/export.log"
+check "export concatenates the shards in region order" \
+      "$(bgzip -dc "$work/export/quant_trait_perm.linear.txt.gz" | grep -cv '^#')" "399"
+check "  and indexes the result" "$([ -s "$work/export/quant_trait_perm.linear.txt.gz.tbi" ] && echo yes || echo no)" "yes"
+check "  first row is chr1, last is chr2" \
+      "$(bgzip -dc "$work/export/quant_trait_perm.linear.txt.gz" | awk -F'\t' '!/^#/ {if (!f) f=$1; l=$1} END{print f, l}')" "chr1 chr2"
+sget() { awk -F'\t' -v k="$2" '$1==k{print $2}' "$work/export/$1.linear.summary.tsv"; }
+thr="$(sget quant_trait_perm perm_threshold_stat)"
+awk -v t="$thr" 'BEGIN{exit !(t > 2.5 && t < 6)}' \
+  && ok "empirical family-wise threshold from 200 permutations: |t| >= $thr" \
+  || bad "empirical threshold out of range: '$thr'"
+# 399 near-independent bins: M_eff should be of that order (the 10th largest
+# of 200 maxima is a noisy quantile, so the band is wide).
+meff="$(sget quant_trait_perm m_eff)"
+awk -v m="$meff" 'BEGIN{exit !(m >= 100 && m <= 1600)}' \
+  && ok "  M_eff = $meff over 399 regions" || bad "  M_eff out of range: '$meff'"
+check "  the chr1 signal passes it" \
+      "$(awk -F'\t' '$4=="chr1:49000-50000" && $NF ~ /empirical/' "$work/export/quant_trait_perm.linear.hits.tsv" | wc -l | tr -d ' ')" "1"
+check "  the null phenotype has no empirical hit" "$(sget null_trait_perm hits_empirical)" "0"
+check "  lambda reported" "$(sget null_trait_perm lambda_gc | awk '{print ($1 > 0.6 && $1 < 1.5) ? "yes" : "no"}')" "yes"
+# Count suppression: at a floor above the cohort size every row goes.
+bash "$DSV_ROOT/scripts/export.sh" --results "$work/perm" --regions "$work/export.regions" \
+    --name quant_trait_perm --method linear --out "$work/export70" --min-count 70 >>"$work/export.log" 2>&1 \
+  || bad_log "export with suppression failed" "$work/export.log"
+check "rows below --min-count are suppressed" \
+      "$(awk -F'\t' '$1=="rows_suppressed"{print $2}' "$work/export70/quant_trait_perm.linear.summary.tsv")" "399"
+# A region without a finished shard is an error unless allowed.
+printf 'chr1\nchr2\nchrX\n' > "$work/export3.regions"
+if bash "$DSV_ROOT/scripts/export.sh" --results "$work/perm" --regions "$work/export3.regions" \
+        --name quant_trait_perm --method linear --out "$work/exportX" >/dev/null 2>&1; then
+    bad "export accepted a region list with a missing shard"
+else
+    ok "export refuses a region list with a missing shard"
+fi
+bash "$DSV_ROOT/scripts/export.sh" --results "$work/perm" --regions "$work/export3.regions" --allow-missing \
+    --name quant_trait_perm --method linear --out "$work/exportX" >>"$work/export.log" 2>&1 \
+  && check "  and exports the rest with --allow-missing" \
+           "$(bgzip -dc "$work/exportX/quant_trait_perm.linear.txt.gz" | grep -cv '^#')" "399" \
+  || bad_log "--allow-missing export failed" "$work/export.log"
+before="$(dsv_mtime "$work/export/quant_trait_perm.linear.txt.gz")"
+bash "$DSV_ROOT/scripts/export.sh" --results "$work/perm" --regions "$work/export.regions" \
+    --name quant_trait_perm --method linear --out "$work/export" --min-count 20 >>"$work/export.log" 2>&1
+check "a finished export is not redone" "$before" "$(dsv_mtime "$work/export/quant_trait_perm.linear.txt.gz")"
+
 # --- assertions on the numbers ---------------------------------------------
 echo "[5/6] results"
 Rscript - "$work" "$fixtures" <<'RS' > "$work/assert.txt" 2>&1
@@ -428,6 +490,27 @@ gi <- qi[Region == truth$Region[1]]
 cat(sprintf("rankint_beta_matches_lm=%s\n", abs(gi$BETA - coef(fi)["cov_resids"]) < 1e-6 * abs(coef(fi)["cov_resids"])))
 cat(sprintf("robust_se_matches_hc1=%s\n", abs(gi$SE - se_hc1) < 1e-6 * se_hc1))
 cat(sprintf("maxshare_reported=%s\n", all(is.finite(q$MAXSHARE)) && all(q$MAXSHARE > 0 & q$MAXSHARE <= 0.5)))
+
+# The first permutation maximum of the chr1 shard, recomputed from scratch
+# under the documented contract: permutations of the usable samples in
+# matrix order from --permSeed, Freedman-Lane on the covariate-adjusted
+# response, classical t over the tested bins.
+qp  <- fread(cmd = paste("gzip -cd", shQuote(file.path(work, "perm", "quant_trait_perm.linear.chr1.txt.gz"))))
+ids <- names(cm)[-(1:4)]
+dd  <- d[match(ids, SAMPLE)]
+Zm  <- model.matrix(~ age + sex + PC1 + PC2 + PC3 + PC4, data = dd)
+n   <- nrow(Zm); dfp <- n - qr(Zm)$rank - 1L
+yr  <- resid(lm(dd$quant_trait ~ Zm - 1))
+set.seed(1); perm1 <- sample.int(n)
+ypr <- resid(lm(yr[perm1] ~ Zm - 1)); yyp <- sum(ypr^2)
+tmax <- 0
+for (rg in qp$Region) {
+  x <- as.numeric(cm[Region == rg][, -(1:4)]); xr <- resid(lm(x ~ Zm - 1)); xx <- sum(xr^2)
+  b <- sum(xr * ypr) / xx; tt <- abs(b) / sqrt(((yyp - b^2 * xx) / dfp) / xx)
+  tmax <- max(tmax, tt)
+}
+pm1 <- as.numeric(strsplit(grep("^1\t", readLines(file.path(work, "perm", "quant_trait_perm.linear.chr1.permmax.txt")), value = TRUE), "\t")[[1]][2])
+cat(sprintf("perm_max_matches_reference=%s\n", abs(pm1 - tmax) < 1e-6 * tmax))
 RS
 get() { awk -F= -v k="$1" '$1==k{print $2}' "$work/assert.txt"; }
 
@@ -436,6 +519,7 @@ check "injected signal is the top hit" "$(get signal_is_top_hit)"        "TRUE"
 check "rank-int row equals lm() on the transformed response" "$(get rankint_beta_matches_lm)" "TRUE"
 check "robust row's SE equals HC1"     "$(get robust_se_matches_hc1)"    "TRUE"
 check "MAXSHARE reported and within the filter" "$(get maxshare_reported)" "TRUE"
+check "permutation maximum equals an independent recomputation" "$(get perm_max_matches_reference)" "TRUE"
 check "injected deletion has a negative effect" "$(get signal_direction_negative)" "TRUE"
 check "linear estimate equals lm() with the PCs in the model" "$(get linear_beta_matches_lm)" "TRUE"
 check "linear t equals lm()"           "$(get linear_t_matches_lm)"      "TRUE"
