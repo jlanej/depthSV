@@ -61,6 +61,7 @@ scripts/analyze.sh \
   --corrected work/corrected/corrected_ndim4.chr1.txt.gz \
   --pheno tests/fixtures/phenotypes.tsv \
   --pheno-manifest conf/phenotypes.example.tsv \
+  --pcs tests/fixtures/svd.pcs.txt --case-level case --min-cases 5 \
   --region chr1 --out work/assoc -- --minObs 30
 ```
 
@@ -129,6 +130,23 @@ sweep. The manifest is tab-separated — `name`, `method`, `model` — so adding
 phenotype is a line in a file. Analyses that already completed are skipped, so a
 sweep can be extended without repeating finished work.
 
+**The PCs the correction removed are part of every model.** Residualising
+depth against PC1..PCk and then testing without those PCs in the model deflates
+every test by roughly 1 − R²(phenotype ~ PCs), and biases any bin that
+correlates with a covariate that itself correlates with a PC — every
+sex-chromosome bin once sex is a covariate. So the analysis stage appends
+PC1..PCk to the covariates of every model: `k` is read from the corrected
+file's name (`corrected_ndim<k>`), the table from `--pcs` or `DSV_PCS`, and a
+corrected matrix with k > 0 refuses to run without them (`--ndim 0` is the
+explicit opt-out). The design is still built once per worker; each region
+costs one projection, computed for a whole block of regions at a time.
+
+A binary response must be coded `0`/`1` or `TRUE`/`FALSE`, or be a two-level
+text column with the case named by `--case-level`; other codings are refused
+rather than guessed, because a guess once reversed effect directions. A
+binary or survival phenotype with fewer cases, controls or events than
+`--min-cases` (default 20) is refused up front.
+
 ### Options
 
 Each stage takes its inputs and output directory as flags; `--help` on any of
@@ -142,6 +160,9 @@ them prints the full usage. The rest are these:
 | `--force` | all | redo a unit that already completed |
 | `--min-obs N` | analyze | skip a region with fewer complete observations |
 | `--min-variance X` | analyze | skip a region whose depth does not vary |
+| `--min-cases N` | analyze | refuse a binary or survival phenotype with fewer cases, controls or events (default 20) |
+| `--pcs FILE`, `--ndim K` | analyze | the PC table and count the correction used; `k` defaults to the corrected file's name, the table to `DSV_PCS` |
+| `--case-level L` | analyze | which level of a two-level text response is the case |
 | `--name` | analyze | label for a single-model run; defaults to the response variable |
 | `--batch-size N` | join | samples per `paste` batch; the default sizes it near √N, inside the open-file limit |
 | `--strict-coords` | join | also checksum the coordinate columns |
@@ -226,9 +247,12 @@ to check when a cohort mismatch is suspected.
 
 The pipeline refuses to proceed on: a sample whose region count disagrees with
 the others, a manifest listing the same sample twice, a chromosome absent from
-the input, a duplicated `SAMPLE` in the phenotype table, an output that fails
-its integrity check, and a correction stage that produces fewer rows than it
-read.
+the input, a duplicated `SAMPLE` in the phenotype, PC or coverage table (or in
+the matrix header after `--sampleIdPattern`), a missing or non-positive
+coverage median, a binary response whose coding is ambiguous, too few cases,
+a PC-corrected matrix analysed without its PCs, an association shard with no
+rows, an output that fails its integrity check, and a correction stage that
+produces fewer rows than it read.
 
 Contig names are resolved from the tabix index rather than assumed, so a matrix
 using `1` and one using `chr1` both work and a genuinely absent chromosome is an
@@ -260,21 +284,28 @@ One tab-separated row per tested region, bgzip-compressed and tabix-indexed:
 #CHROM  START  END  Region  N  NCase  NControl  <statistics>
 ```
 
-`N` is the number of complete observations the region was tested on.
+`N` is the number of observed depths the region was tested on (a few missing
+values are mean-imputed; regions with real missingness fall to `--min-obs`).
 `NCase`/`NControl` are meaningful for logistic and Cox; for linear both carry
 the sample count.
 
-The trailing statistics are named by the fitted model, so the column set
-depends on the method:
+The trailing statistics depend on the method:
 
 | Method | Trailing columns |
 |---|---|
-| linear | `Estimate`, `Std. Error`, `t value`, `Pr(>\|t\|)` |
-| logistic | `Estimate`, `Std. Error`, `z value`, `Pr(>\|z\|)` |
-| coxph | `coef`, `exp(coef)`, `se(coef)`, `z`, `Pr(>\|z\|)` — five, not four |
+| linear | `BETA`, `SE`, `STAT` (t), `P`, `LOG10P` |
+| logistic | `BETA`, `SE`, `STAT` (Wald z), `P`, `LOG10P`, `LRT_P`, `CONVERGED` |
+| coxph | `BETA`, `HR`, `SE`, `STAT` (z), `P`, `LOG10P`, `CONVERGED` |
 
-Regions dropped by the quality-control filters are absent rather than reported
-as missing, so the row count is normally lower than the region count.
+`BETA` is per unit of corrected depth, i.e. per log2 ratio: a heterozygous
+deletion is about −1, a duplication about +0.58. `LOG10P` is −log10(P) computed
+in log space, so it does not underflow where `P` prints as `0`. For logistic,
+`LRT_P` is the likelihood-ratio p-value; under complete separation the Wald
+statistic collapses toward zero (Hauck–Donner) while the LRT does not, and
+`CONVERGED` says whether the fit converged. Regions dropped by the
+quality-control filters are absent rather than reported as missing, so the row
+count is normally lower than the region count; a shard with no rows at all is
+an error unless `DSV_ALLOW_EMPTY=1`.
 
 ---
 

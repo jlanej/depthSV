@@ -23,7 +23,14 @@
 set -euo pipefail
 
 region_list="${1:?usage: sbatch --array=1-N slurm_array.sh <regions.txt>}"
-here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# sbatch runs a spooled COPY of this script, so its own directory is not the
+# checkout. Resolve the stage scripts through DSV_ROOT (exported by any
+# sourced stage script, or set it yourself), then the submit directory.
+DSV_ROOT="${DSV_ROOT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
+[ -x "$DSV_ROOT/scripts/correct.sh" ] \
+    || { echo "cannot find scripts/correct.sh under DSV_ROOT=$DSV_ROOT; export DSV_ROOT to the depthSV checkout" >&2; exit 2; }
+here="$DSV_ROOT/workflows"
 
 # Outside SLURM (a login-node smoke check), do the first region.
 idx="${SLURM_ARRAY_TASK_ID:-1}"
@@ -35,16 +42,19 @@ region="$(sed -n "${idx}p" "$region_list")"
 : "${DSV_RESULTS_DIR:?set DSV_RESULTS_DIR}"
 
 cpus="${SLURM_CPUS_PER_TASK:-4}"
+# Workers and compression threads share the allocation; asking for both at
+# the full CPU count oversubscribes the node twofold.
+threads=$(( cpus / 2 )); [ "$threads" -ge 1 ] || threads=1
 
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] task $idx -> region $region"
 
 "$here/../scripts/correct.sh" \
     --region "$region" \
-    --jobs "$cpus" --threads "$cpus"
+    --jobs "$cpus" --threads "$threads"
 
 "$here/../scripts/analyze.sh" \
     --corrected "${DSV_CORRECTED_DIR}/corrected_ndim${DSV_NDIM:-16}.$(printf '%s' "$region" | tr ':' '_').txt.gz" \
     --region "$region" \
-    --jobs "$cpus" --threads "$cpus"
+    --jobs "$cpus" --threads "$threads"
 
 echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] task $idx done"

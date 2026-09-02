@@ -42,8 +42,9 @@ done
 
 dsv_require_opt matrix pcs coverage region out_dir
 dsv_require_file "$matrix" "$pcs" "$coverage"
-dsv_require_cmd bgzip tabix parallel Rscript
+# Modules first: on a cluster the tools may only exist after `module load`.
 dsv_load_modules
+dsv_require_cmd bgzip tabix parallel Rscript
 
 rscript="${DSV_CORRECT_R:-$DSV_ROOT/R/correct.R}"
 dsv_require_file "$rscript"
@@ -71,7 +72,8 @@ log="$out_dir/corrected_ndim${ndim}.${slug}.log"
 # Column header of the matrix, needed by every parallel chunk.
 header_file="$(mktemp "${TMPDIR:-/tmp}/dsv.header.XXXXXX")"
 stats_dir="$(mktemp -d "${TMPDIR:-/tmp}/dsv.stats.XXXXXX")"
-trap 'rm -rf "$header_file" "$stats_dir"' EXIT
+basis="$(mktemp "${TMPDIR:-/tmp}/dsv.basis.XXXXXX")"
+trap 'rm -rf "$header_file" "$stats_dir" "$basis"' EXIT
 
 dsv_header "$matrix" > "$header_file"
 
@@ -79,25 +81,30 @@ n_in="$(dsv_read_region "$matrix" "$region" | wc -l | tr -d ' ')"
 dsv_log "region $region: $n_in input rows, ndim=$ndim"
 [ "$n_in" -gt 0 ] || dsv_die "region $region contains no rows"
 
+# Sample alignment and projection basis, computed once for the region from
+# the header alone. Every worker loads it instead of re-reading the PC table
+# and refactorising the design — at biobank width that prologue cost more
+# than the correction itself. Its diagnostics (the [align] drop counts, rank
+# warnings) go to the unit's log.
+# Note the ${arr[@]+"${arr[@]}"} idiom: under `set -u`, expanding an empty
+# array is an error on bash 3.2, which is what macOS still ships.
+: > "$log"
+Rscript "$rscript" --inputPCs "$pcs" --coverageStats "$coverage" --ndim "$ndim" \
+    --inputFile "$header_file" --saveBasis "$basis" ${extra[@]+"${extra[@]}"} 2>>"$log" \
+    || dsv_die "could not build the sample alignment / projection basis (see $log)"
+
 # One real data row, used both to probe the output header and to size the
 # parallel chunk. Read once rather than once per purpose.
 probe_row="$(mktemp "${TMPDIR:-/tmp}/dsv.row.XXXXXX")"
 out_header="$(mktemp "${TMPDIR:-/tmp}/dsv.outhdr.XXXXXX")"
-trap 'rm -rf "$header_file" "$stats_dir" "$probe_row" "$out_header"' EXIT
+trap 'rm -rf "$header_file" "$stats_dir" "$basis" "$probe_row" "$out_header"' EXIT
 set +o pipefail
 dsv_read_region "$matrix" "$region" | head -n 1 > "$probe_row"
-# Note the ${arr[@]+"${arr[@]}"} idiom: under `set -u`, expanding an empty
-# array is an error on bash 3.2, which is what macOS still ships.
 { cat "$header_file" "$probe_row"; } \
-  | Rscript "$rscript" --inputPCs "$pcs" --inputFile - --coverageStats "$coverage" \
-      --ndim "$ndim" ${extra[@]+"${extra[@]}"} 2>>"$log" | head -n 1 > "$out_header"
+  | Rscript "$rscript" --loadBasis "$basis" --inputFile - --ndim "$ndim" \
+      ${extra[@]+"${extra[@]}"} 2>/dev/null | head -n 1 > "$out_header"
 set -o pipefail
 [ -s "$out_header" ] || dsv_die "could not derive the output header from $rscript (see $log)"
-
-# The probe succeeded, so what it logged is only the SIGPIPE noise from having
-# its output truncated by `head`. Clear it: the log should hold the workers'
-# real diagnostics, not an expected artefact that reads like an error.
-: > "$log"
 
 chunk="$(dsv_chunk_lines "$probe_row" "$chunk")"
 
@@ -107,8 +114,7 @@ chunk="$(dsv_chunk_lines "$probe_row" "$chunk")"
 extra_q=""
 [ ${#extra[@]} -eq 0 ] || extra_q="$(printf '%q ' "${extra[@]}")"
 worker="cat $(dsv_q "$header_file") - | Rscript $(dsv_q "$rscript") \
-  --inputPCs $(dsv_q "$pcs") --inputFile - --coverageStats $(dsv_q "$coverage") \
-  --ndim $(dsv_q "$ndim") --skipOutputHeader \
+  --loadBasis $(dsv_q "$basis") --inputFile - --ndim $(dsv_q "$ndim") --skipOutputHeader \
   --statsFile $(dsv_q "$stats_dir")/stats.{#}.txt ${extra_q}2>>$(dsv_q "$log")"
 
 (
@@ -121,9 +127,16 @@ worker="cat $(dsv_q "$header_file") - | Rscript $(dsv_q "$rscript") \
 # marker written by dsv_output_commit is what makes a re-run skip this unit, so
 # anything produced after it would be permanently missing if the job were
 # interrupted in between.
+#
+# The chunk files are named by GNU parallel's job number, so a glob lists
+# them lexicographically (stats.1, stats.10, stats.11, ..., stats.2); from ten
+# chunks on that order is not coordinate order, and tabix refuses an unsorted
+# BED. Sort the merged body by contig and start before indexing.
 if compgen -G "$stats_dir/stats.*.txt" > /dev/null; then
-    head -n 1 "$(ls "$stats_dir"/stats.*.txt | head -1)" > "$stats"
-    for f in "$stats_dir"/stats.*.txt; do tail -n +2 "$f"; done >> "$stats"
+    {
+        head -n 1 "$(ls "$stats_dir"/stats.*.txt | head -1)"
+        for f in "$stats_dir"/stats.*.txt; do tail -n +2 "$f"; done | sort -k1,1 -k2,2n
+    } > "$stats"
     bgzip -f "$stats" && tabix -f -p bed "${stats}.gz"
     dsv_log "stats: ${stats}.gz"
 fi

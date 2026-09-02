@@ -6,6 +6,13 @@
 #   method  linear | logistic | coxph
 #   model   an R formula; the depth term must be named cov_resids
 #
+# The coverage PCs the correction removed are appended to every model by the
+# analysis stage (--pcs/--ndim); they need not be written here.
+#
+# A binary response must be coded 0/1 or TRUE/FALSE, or be a two-level text
+# column with the case named by --case-level; anything else is refused rather
+# than guessed, because guessing once reversed effect directions.
+#
 # Adding a phenotype is a row here. Re-running skips analyses that already
 # completed, so a sweep can be extended without repeating finished work.
 #
@@ -14,5 +21,7 @@
 #name	method	model
 quant_trait	linear	quant_trait~cov_resids+age+sex+ancestry_PC1+ancestry_PC2
 null_trait	linear	null_trait~cov_resids+age+sex+ancestry_PC1+ancestry_PC2
+pc_null	linear	pc_null~cov_resids+age+sex
 case_status	logistic	case_status~cov_resids+age+sex+ancestry_PC1+ancestry_PC2
+case_label	logistic	case_label~cov_resids+age+sex+ancestry_PC1+ancestry_PC2
 survival	coxph	Surv(time,event)~cov_resids+age+sex

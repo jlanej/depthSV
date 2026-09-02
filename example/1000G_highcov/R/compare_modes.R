@@ -46,14 +46,13 @@ read_shards <- function(dir, name, method) {
   files <- Sys.glob(file.path(dir, sprintf("%s.%s.*.txt.gz", name, method)))
   files <- files[!grepl("\\.tmp\\.gz$", files)]
   if (!length(files)) return(NULL)
-  dt <- rbindlist(lapply(files, function(f) fread(cmd = paste("gzip -cd", shQuote(f)))))
+  dt <- rbindlist(lapply(files, function(f) fread(cmd = paste("gzip -cd", shQuote(f)))), fill = TRUE)
   setnames(dt, 1:7, c("CHROM", "START", "END", "Region", "N", "NCase", "NControl"))
-  stat_idx <- if (method == "coxph") 11L else 10L
-  setnames(dt, ncol(dt), "P")
-  setnames(dt, 8L, "Estimate")
-  setnames(dt, stat_idx, "STAT")
+  for (col in c("BETA", "STAT", "P")) {
+    if (!col %in% names(dt)) stop("shards for ", name, " lack a ", col, " column", call. = FALSE)
+  }
   dt[, .(CHROM, Region, N,
-         Estimate = as.numeric(Estimate), STAT = as.numeric(STAT), P = as.numeric(P))]
+         Estimate = as.numeric(BETA), STAT = as.numeric(STAT), P = as.numeric(P))]
 }
 
 chrom_class <- function(x) {

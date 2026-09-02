@@ -23,18 +23,23 @@ corrected=""; pheno="${DSV_PHENO:-}"; model=""; method="linear"; region=""
 out_dir="${DSV_RESULTS_DIR:-}"; manifest="${DSV_PHENO_MANIFEST:-}"; name=""
 jobs="${DSV_JOBS:-4}"; chunk="${DSV_CHUNK:-2000}"; threads="${DSV_THREADS:-2}"
 min_obs="${DSV_MIN_OBS:-}"; min_var="${DSV_MIN_VARIANCE:-}"
-force=0; extra=()
+pcs="${DSV_PCS:-}"; ndim=""; case_level=""; min_cases="${DSV_MIN_CASES:-}"
+force=0; extra=(); model_flag=0; manifest_flag=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --corrected)      corrected="$2"; shift 2 ;;
         --pheno)          pheno="$2";     shift 2 ;;
-        --model)          model="$2";     shift 2 ;;
+        --model)          model="$2"; model_flag=1; shift 2 ;;
         --method)         method="$2";    shift 2 ;;
         --name)           name="$2";      shift 2 ;;
         --region)         region="$2";    shift 2 ;;
         --out)            out_dir="$2";   shift 2 ;;
-        --pheno-manifest) manifest="$2";  shift 2 ;;
+        --pheno-manifest) manifest="$2"; manifest_flag=1; shift 2 ;;
+        --pcs)            pcs="$2";       shift 2 ;;
+        --ndim)           ndim="$2";      shift 2 ;;
+        --case-level)     case_level="$2"; shift 2 ;;
+        --min-cases)      min_cases="$2"; shift 2 ;;
         --jobs)           jobs="$2";      shift 2 ;;
         --chunk)          chunk="$2";     shift 2 ;;
         --threads)        threads="$2";   shift 2 ;;
@@ -47,17 +52,38 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# A --model on the command line is a single-analysis run even when the
+# environment names a manifest: flags win over the environment.
+if [ "$model_flag" -eq 1 ] && [ "$manifest_flag" -eq 0 ]; then manifest=""; fi
 dsv_require_opt corrected pheno region out_dir
 [ -z "$manifest" ] || [ -z "$model" ] \
     || dsv_die "--model and --pheno-manifest are mutually exclusive"
+dsv_load_modules
 dsv_require_file "$corrected" "$pheno"
 dsv_require_cmd bgzip tabix parallel Rscript
-dsv_load_modules
 
-# Fold the QC thresholds into the pass-through so they reach the R driver in
-# both the probe and the worker invocations.
-[ -z "$min_obs" ] || extra+=(--minObs "$min_obs")
-[ -z "$min_var" ] || extra+=(--minVariance "$min_var")
+# The PCs removed by the correction must be in the association model, or the
+# test is deflated and — with covariates — biased. The count is read from the
+# corrected file's name (corrected_ndim<N>.<region>) unless given, and the
+# table from DSV_PCS or --pcs. --ndim 0 is the explicit way to opt out.
+if [ -z "$ndim" ]; then
+    ndim="$(printf '%s' "$(basename "$corrected")" | sed -nE 's/^corrected_ndim([0-9]+)\..*/\1/p')"
+    [ -n "$ndim" ] || ndim=0
+fi
+if [ "$ndim" -gt 0 ]; then
+    [ -n "$pcs" ] || dsv_die "the corrected matrix removed $ndim PCs; pass --pcs (or set DSV_PCS) so the test conditions on them, or --ndim 0 to opt out"
+    dsv_require_file "$pcs"
+fi
+
+# Fold the thresholds and the PC arguments into the pass-through, BEFORE
+# whatever the user put after `--`: optparse keeps the last occurrence, so
+# the user's flag wins over the environment.
+front=(--minObs "${min_obs:-100}")
+[ -z "$min_var" ]    || front+=(--minVariance "$min_var")
+[ -z "$min_cases" ]  || front+=(--minCases "$min_cases")
+[ -z "$case_level" ] || front+=(--caseLevel "$case_level")
+[ "$ndim" -eq 0 ]    || front+=(--pcs "$pcs" --ndim "$ndim")
+extra=(${front[@]+"${front[@]}"} ${extra[@]+"${extra[@]}"})
 
 rscript="${DSV_ANALYZE_R:-$DSV_ROOT/R/analyze.R}"
 dsv_require_file "$rscript"
@@ -121,17 +147,26 @@ run_one() {                        # run_one <name> <method> <model>
     : > "$log"
 
     # Regions are legitimately dropped by the QC filters, so the row count is
-    # not a parity check here — completeness is enforced by --halt now,fail=1
-    # plus the integrity check in dsv_output_commit.
+    # not a parity check here. Rscript is the LAST command of the worker
+    # pipeline on purpose: with a trailing `| tail` GNU parallel only ever saw
+    # tail's exit status and an R crash part-way through a chunk went
+    # unnoticed. The header is suppressed in R instead.
     local worker
     worker="cat $(dsv_q "$header_file") - | Rscript $(dsv_q "$rscript") \
-      -f - -p $(dsv_q "$pheno") -m $(dsv_q "$form") -r $(dsv_q "$meth") \
-      ${extra_q}2>>$(dsv_q "$log") | tail -n +2"
+      -f - -p $(dsv_q "$pheno") -m $(dsv_q "$form") -r $(dsv_q "$meth") --skipOutputHeader \
+      ${extra_q}2>>$(dsv_q "$log")"
     (
         cat "$out_header"
         dsv_read_region "$corrected" "$region" \
           | parallel "${DSV_PARALLEL_FLAGS[@]}" --block "$DSV_BLOCK_BYTES" -L "$chunk" -j "$jobs" "$worker"
     ) | bgzip -@ "$threads" > "$(dsv_output_tmp "$final")"
+
+    # A result with no rows is not a result. The QC filters can drop every
+    # region of a small window legitimately, but at that point the caller
+    # must say so explicitly rather than inherit a green run.
+    if [ "$(bgzip -dc "$(dsv_output_tmp "$final")" | grep -cv '^#')" -eq 0 ] && [ "${DSV_ALLOW_EMPTY:-0}" != "1" ]; then
+        dsv_die "$name produced no result rows for $region (every region failed QC?). Set DSV_ALLOW_EMPTY=1 to accept an empty shard."
+    fi
 
     dsv_output_commit "$final"
 }

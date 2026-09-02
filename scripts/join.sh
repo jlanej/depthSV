@@ -55,8 +55,9 @@ done
 
 dsv_require_opt manifest out_dir
 dsv_require_file "$manifest"
-dsv_require_cmd bgzip tabix paste awk parallel mkfifo
+# Modules first: on a cluster the tools may only exist after `module load`.
 dsv_load_modules
+dsv_require_cmd bgzip tabix paste awk parallel mkfifo
 
 mkdir -p "$out_dir"
 # Absolute from here on: the batch step cds into the column directory, and a
@@ -81,14 +82,21 @@ n_samples="$(grep -c . "$manifest" || true)"
 [ "$n_samples" -gt 0 ] || dsv_die "manifest contains no paths"
 
 # Duplicate names would become duplicate matrix columns and every later stage
-# matches samples by name, so refuse them before any heavy work.
-dup="$(
-    while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        dsv_sample_name "$f"
-    done < "$manifest" | sort | uniq -d | head -3
-)"
-[ -z "$dup" ] || dsv_die "duplicate sample name(s) in the manifest after suffix stripping: $(printf '%s' "$dup" | tr '\n' ' ')"
+# matches samples by name, so refuse them before any heavy work. The list is
+# written to a file rather than piped into `head`, which would kill `uniq`
+# with SIGPIPE (exit 141, no message) on a long duplicate list.
+mkdir -p "$out_dir"
+dup_file="$out_dir/.dsv.dups.$$"
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    dsv_sample_name "$f"
+done < "$manifest" | sort | uniq -d > "$dup_file"
+if [ -s "$dup_file" ]; then
+    dup="$(head -3 "$dup_file" | tr '\n' ' ')"
+    rm -f "$dup_file"
+    dsv_die "duplicate sample name(s) in the manifest after suffix stripping: $dup"
+fi
+rm -f "$dup_file"
 
 if [ "$batch_size" = "auto" ]; then
     # sqrt(N) balances the two file-count ceilings: each batch paste opens

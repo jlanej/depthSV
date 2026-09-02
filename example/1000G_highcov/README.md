@@ -331,7 +331,7 @@ that matter most:
 | `EX_N_GPCS` / `EX_COVARIATES` | 10 / `SEX+GPC1..GPC10` when covariates exist, else `none` | covariate terms of the adjusted models |
 | `EX_GENO_CHROMS` | 1–22 (22 only in smoke) | chromosomes the genotype PCA uses |
 | `EX_PREAMBLE_MODULES` | `plink2` | modules loaded before plink2, where `module` exists |
-| `EX_WINDOW` | 10000000 | work-unit size in bp (~310 units over chr1–22,X,Y,M); 0 = per contig. Kept under 10 correction chunks per unit until the stats merge in `scripts/correct.sh` is sorted (see `REVIEW.md`) |
+| `EX_WINDOW` | 10000000 | work-unit size in bp (~310 units over chr1–22,X,Y,M, ~150 s each at 3,202 samples); 0 = per contig |
 | `EX_CONTIG_REGEX` | primary + chrM | which contigs get corrected/analysed (the matrix keeps everything) |
 | `EX_MIN_OBS` | 100 | per-region completeness floor at the analysis stage |
 | `EX_SBATCH_JOIN/UNIT/LIGHT` | see config | resources per job class |

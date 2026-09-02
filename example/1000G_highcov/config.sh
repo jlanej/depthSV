@@ -163,15 +163,8 @@ if [ -z "${EX_NDIM:-}" ]; then
 fi
 
 # Work-unit size for the SLURM array / local loop, in bp. 0 = one unit per
-# contig. The default gives ~310 units over chr1-22,X,Y,M.
-#
-# STOPGAP: keep a unit under 10 correction chunks. scripts/correct.sh merges
-# its per-chunk statistics files in lexicographic order (stats.1, stats.10,
-# stats.11, ..., stats.2), so from 10 chunks on the merged BED is unsorted,
-# tabix refuses it, and the unit dies before committing (REVIEW.md, stats
-# merge). At 3,202 samples a row is ~19.6 KB and DSV_CHUNK caps a chunk at
-# 2,000 rows, so 25 Mb windows (25,000 rows) would fail on every unit; 10 Mb
-# windows are 5 chunks. Remove once the merge is sorted upstream.
+# contig. 10 Mb gives ~310 units over chr1-22,X,Y,M — about 150 s and under
+# 1 GB each at 3,202 samples, small enough to be cheap to lose.
 if [ "${EX_SMOKE}" = "1" ]; then
     EX_WINDOW="${EX_WINDOW:-1000000}"
 else

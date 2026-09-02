@@ -7,7 +7,9 @@
 # access to real cohort data.
 #
 # A known association is injected at one region on each chromosome so tests can
-# assert that the pipeline recovers signal, not merely that it runs.
+# assert that the pipeline recovers signal, not merely that it runs; a
+# phenotype driven by the leading PC is included so the suite can tell whether
+# the association test conditions on the PCs the correction removed.
 #
 #   Rscript tests/make_fixtures.R [outDir] [nSamples] [nRegionsPerChrom]
 # ---------------------------------------------------------------------------
@@ -18,6 +20,7 @@ args     <- commandArgs(trailingOnly = TRUE)
 out_dir  <- if (length(args) >= 1) args[1] else "tests/fixtures"
 n_sample <- if (length(args) >= 2) as.integer(args[2]) else 60L
 n_region <- if (length(args) >= 3) as.integer(args[3]) else 200L
+if (n_region < 75L) stop("nRegionsPerChrom must be at least 75 (the injected signal sits at region 75)", call. = FALSE)
 
 set.seed(20260812)   # fixtures must be byte-reproducible
 
@@ -86,15 +89,21 @@ fwrite(data.table(SAMPLE = samples, as.data.table(pcs)),
 
 # --- phenotypes ------------------------------------------------------------
 # quant_trait is genuinely caused by carrier status; null_trait is not, so the
-# suite can check both power and calibration.
+# suite can check both power and calibration. pc_null is driven by PC1 — the
+# structure the correction removes from depth — and by nothing else: a test
+# that fails to condition on the PCs is deflated on it (lambda ~ 0.2 here).
 age <- round(rnorm(n_sample, 55, 9), 1)
 sex <- sample(c("M", "F"), n_sample, replace = TRUE)
+case_status <- rbinom(n_sample, 1, plogis(-1.1 + 1.4 * carrier))
 
 pheno <- data.table(
   SAMPLE      = samples,
-  quant_trait = round(1.1 * carrier + 0.02 * age + rnorm(n_sample), 4),
+  quant_trait = round(2.0 * carrier + 0.02 * age + rnorm(n_sample), 4),
   null_trait  = round(rnorm(n_sample), 4),
-  case_status = rbinom(n_sample, 1, plogis(-1.1 + 1.4 * carrier)),
+  pc_null     = round(2 * pcs[, 1] + rnorm(n_sample), 4),
+  case_status = case_status,
+  # The same binary phenotype as text, so the explicit case level is exercised.
+  case_label  = ifelse(case_status == 1L, "case", "control"),
   # Time-to-event outcome, so the coxph path is exercised too. Carriers fail
   # faster, matching the direction of the injected deletion.
   time        = round(rexp(n_sample, rate = 0.04 * exp(0.8 * carrier)), 2),

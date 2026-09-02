@@ -52,6 +52,7 @@ workflow depthsv {
         corrected_index = correct.corrected_index,
         phenotypes = phenotypes,
         pheno_manifest = pheno_manifest,
+        pcs = pcs, ndim = ndim,
         region = region, min_obs = min_obs,
         docker = docker, cpu = analyze_cpu, mem_gb = analyze_mem_gb,
         disk_gb = disk_gb, preemptible = preemptible
@@ -122,6 +123,8 @@ task analyze {
     File corrected_index
     File phenotypes
     File pheno_manifest
+    File pcs
+    Int ndim
     String region
     Int min_obs
     String docker
@@ -141,6 +144,7 @@ task analyze {
       --corrected in/corrected.txt.gz \
       --pheno "~{phenotypes}" \
       --pheno-manifest "~{pheno_manifest}" \
+      --pcs "~{pcs}" --ndim ~{ndim} \
       --region "~{region}" \
       --out out \
       --jobs ~{cpu} \

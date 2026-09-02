@@ -40,6 +40,7 @@ done
 
 dsv_require_opt matrix
 dsv_require_file "$matrix"
+dsv_load_modules
 dsv_require_cmd tabix awk
 
 [ -s "${matrix}.tbi" ] || [ -s "${matrix}.csi" ] \
