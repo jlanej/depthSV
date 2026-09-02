@@ -86,6 +86,36 @@ done < "$work/regions.win.txt"
 check "windowed regions cover every bin exactly once" "$win_rows" "800"
 check "  and contain no duplicate bins" "$(sort "$work/win.keys" | uniq -d | wc -l | tr -d ' ')" "0"
 
+# The cloud shape of the join: blocks of samples joined separately, then one
+# region pasted out of the block matrices. The window matrix must equal the
+# same region cut from the whole-cohort matrix, byte for byte.
+mkdir -p "$work/blocks"
+split -l 25 "$fixtures/mosdepth.input.txt" "$work/blocks/manifest."
+: > "$work/blocks/blocks.list"
+for m in "$work/blocks"/manifest.*; do
+    bash "$DSV_ROOT/scripts/join.sh" --manifest "$m" --out "$m.join" --threads 2 >>"$work/blocks.log" 2>&1 \
+      || bad_log "block join failed" "$work/blocks.log"
+    echo "$m.join/depth.matrix.txt.gz" >> "$work/blocks/blocks.list"
+done
+check "three sample blocks joined" "$(grep -c . "$work/blocks/blocks.list")" "3"
+bash "$DSV_ROOT/scripts/join_paste.sh" --blocks "$work/blocks/blocks.list" --region chr2:1-50000 \
+     --out "$work/blocks/win" --threads 2 >>"$work/blocks.log" 2>&1 \
+  && cmp -s <(bgzip -dc "$work/blocks/win/depth.matrix.txt.gz") \
+            <(dsv_header "$matrix"; tabix "$matrix" chr2:1-50000) \
+  && ok "a window pasted from block matrices equals the same region of the whole matrix" \
+  || bad_log "join_paste differs from the whole-matrix region" "$work/blocks.log"
+before="$(dsv_mtime "$work/blocks/win/depth.matrix.txt.gz")"
+bash "$DSV_ROOT/scripts/join_paste.sh" --blocks "$work/blocks/blocks.list" --region chr2:1-50000 \
+     --out "$work/blocks/win" --threads 2 >>"$work/blocks.log" 2>&1
+check "  and is not redone" "$before" "$(dsv_mtime "$work/blocks/win/depth.matrix.txt.gz")"
+{ cat "$work/blocks/blocks.list"; head -n 1 "$work/blocks/blocks.list"; } > "$work/blocks/dup.list"
+if bash "$DSV_ROOT/scripts/join_paste.sh" --blocks "$work/blocks/dup.list" --region chr2:1-50000 \
+        --out "$work/blocks/dupwin" >/dev/null 2>&1; then
+    bad "join_paste accepted the same block twice"
+else
+    ok "  a block listed twice (duplicate samples) is refused"
+fi
+
 # The same sample listed twice must be refused before any pasting: it would
 # become two columns under one name, and later stages match columns by name.
 { cat "$fixtures/mosdepth.input.txt"; head -1 "$fixtures/mosdepth.input.txt"; } > "$work/dupman.txt"

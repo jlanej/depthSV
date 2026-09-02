@@ -721,11 +721,11 @@ is the coding-and-QC commit that carries this section.
 | §2.2 Duplicate `SAMPLE` rows | fixed | `beaf00d`: refused in every table and in the matrix header |
 | §2.3 August findings (markers, `tail`, parity, empty shards, manifest check, modules, `DSV_ROOT`) | fixed | `42f2823` (PR2): parameter-aware `.params` signatures with `--force`, row parity, empty-shard refusal, manifest-content check, module order, spool-safe `DSV_ROOT` |
 | §2.4 New, smaller | fixed | `42f2823` |
-| §3.1 Join at biobank scale | open | PR5 / later: tile-parallel and block join |
+| §3.1 Join at biobank scale | partly | PR5: block join — `scripts/join.sh` per sample block and `scripts/join_paste.sh` per window (`workflows/depthsv_blocks.wdl`), so no task sees the whole matrix; a tile-parallel single-node join is still open |
 | §3.2 CPU overhead in correct/analyze | partly | PR1/PR2: basis computed once per unit, block projection, numeric `fread`, `select=`; process restarts and text parsing remain |
 | §3.3 Logistic cost | open | score test not implemented |
 | §3.4 Region parsed once per phenotype | open | |
 | §3.5 Text storage | open | |
-| §4 Deployment | partly | PR3: WDL carries the ploidy, winsor and leverage inputs; PR4a: `--min-count` suppression in the export (All of Us), permutation inputs in the WDL; image publish, streaming localisation, runtime attributes are PR5 |
+| §4 Deployment | mostly fixed | PR3/PR4a: ploidy, winsor, leverage, permutation inputs and `--min-count` suppression; PR5: image published from CI on tags (linux/amd64, GHCR, digest printed) and defaulted in both WDLs, `regions_file` + `read_lines`, `bootDiskSizeGb`/`maxRetries`/`TMPDIR`/`dx_timeout`, block bytes and chunk reachable, indexes and logs as outputs, streaming (`parameter_meta`, `localization_optional` with the GCS token and URL-safe scripts), the block-join workflow, SLURM dispatcher throttle/`--output`/`--export=ALL` guidance, platform notes in the README. Still open: `analyze_nullmodel.R` (GENESIS) untested; the score test for logistic |
+| §6 Hygiene | partly | PR5: `VERSION`, provenance (version, commit, R, htslib, timestamp) in every export summary, OCI labels and `curl` in the image, `CITATION.cff` with version/date/repository (authors and DOI to fill at release). Still open: reproducers for the README's performance claims |
 | §5 Example and preamble | fixed / partly | `42f2823`: lock ownership, `.selected_modes`, run.env, provenance; PR3: ploidy wiring, INT rows, new sex-table checks; PR4b: export per mode, unrelated-set and structured-null rows, SV-callset recovery stage |
-| §6 Hygiene | partly | credit and review docs landed; version stamp, `CITATION.cff` authors, release tag are PR5 |

@@ -409,6 +409,48 @@ See [`PLAN.md`](PLAN.md) for the design and the current state of that work.
 
 ---
 
+## Deploying on HPC and the cloud
+
+**SLURM.** `workflows/slurm_array.sh` is one array task per region; source
+your `conf/*.env` first, throttle the array (`%100`), split a list longer
+than the site's `MaxArraySize`, pass `--export=ALL` where the site default
+is `SBATCH_EXPORT=NONE`, and give `--output` a log directory rather than
+the checkout. Each task uses half its CPUs for workers and half for
+compression. The example under `example/1000G_highcov` shows a
+self-scheduling chain (join → dispatch → array → evaluate) built on the
+same scripts.
+
+**All of Us and the UK Biobank RAP** both run WDL on their own engines
+(Cromwell, dxCompiler). Two workflows are shipped:
+
+- `workflows/depthsv.wdl` — start from a joined matrix; every shard
+  localises the whole matrix. Right up to a few thousand samples.
+- `workflows/depthsv_blocks.wdl` — the biobank shape: `scripts/join.sh`
+  per block of ~1,000 samples, then per window `scripts/join_paste.sh`
+  reads that region from every block through its index and pastes the
+  cohort-wide window matrix for the task that corrects and analyses it. No
+  task ever sees the whole matrix and the multi-terabyte matrix is never
+  materialised.
+
+Both take the region list as a file, expose the ploidy, winsor, leverage
+and permutation options, set `TMPDIR` inside the task, request a boot disk
+and one retry, and return the indexes and per-unit logs beside the outputs.
+On dxCompiler the block matrices are streamed (`parameter_meta`); the
+whole-matrix workflow can stream too. Finish either with `scripts/export.sh`
+over the collected shards — it verifies coverage against the region list,
+suppresses counts below 20 (the All of Us dissemination floor) and derives
+the empirical threshold — and keep the correction statistics (per-bin
+minima and maxima) in the workspace.
+
+Platform notes: All of Us workers pull images through the workspace's
+Artifact Registry remote for Docker Hub and GHCR, and cannot reach GitHub
+or Dropbox — stage every input, including the PAR BED, in the workspace
+bucket; the CDR already ships ancestry PCs, as the RAP does genotype PCs
+(Data-Field 22009), so the example's plink2 recipe is for cohorts without
+them. On the RAP, `dx upload` the image tarball (`docker save`) or reference
+GHCR, and pass `dx_instance_type` through the runtime attributes if the
+default instance does not suit.
+
 ## Container
 
 ```bash
@@ -419,9 +461,14 @@ docker run --rm depthsv:dev /opt/depthsv/tests/smoke_test.sh /tmp/s
 The image pins R and a dated CRAN snapshot, so a rebuild resolves the same
 package versions rather than whatever is current. It carries no site
 configuration and no scheduler assumptions; the stages are separate commands
-that a workflow engine calls individually.
+that a workflow engine calls individually. CI publishes it for `linux/amd64`
+on every release tag as `ghcr.io/<owner>/depthsv:<version>` and prints the
+digest; a workflow input should pin that digest (`docker` in both WDLs
+defaults to the version tag). The image carries `VERSION` and the commit it
+was built from as OCI labels and under `/opt/depthsv/`.
 
-Results are byte-identical between the container and a host run.
+Results are byte-identical between the container and a host run; CI runs the
+suite in both.
 
 ## Requirements
 

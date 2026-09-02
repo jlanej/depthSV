@@ -2,14 +2,21 @@ cff-version: 1.2.0
 title: depthSV
 message: If you use this software, please cite it as below.
 type: software
+version: 0.2.0
+date-released: "2026-09-02"
+repository-code: https://github.com/jlanej/depthSV
+license: MIT
 abstract: >-
   Association testing of sequencing read depth against phenotypes at biobank
   scale. Joins per-sample depth over fixed genomic bins, corrects for technical
-  structure using principal components, and tests each bin against one or more
-  phenotypes, producing association summary statistics.
+  structure using principal components and a sex-chromosome ploidy model, and
+  tests each bin against one or more phenotypes with the removed components in
+  the model, producing association summary statistics with permutation-based
+  genome-wide thresholds.
+# Replace with the authors' names and ORCIDs before a release; a Zenodo DOI
+# minted on the release tag belongs in `identifiers`.
 authors:
   - name: depthSV contributors
-license: MIT
 keywords:
   - copy number variation
   - structural variation

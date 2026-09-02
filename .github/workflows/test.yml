@@ -3,6 +3,7 @@ name: test
 on:
   push:
     branches: [main, master]
+    tags: ['v*']
   pull_request:
 
 jobs:
@@ -129,7 +130,58 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Check the WDL parses and type-checks
+      - name: Check the WDLs parse and type-check
         run: |
           pip install --quiet miniwdl
-          miniwdl check workflows/depthsv.wdl
+          miniwdl check workflows/depthsv.wdl workflows/depthsv_blocks.wdl
+
+  # The image the cloud platforms run: built for linux/amd64 on every release
+  # tag (v0.2.0 -> ghcr.io/<owner>/depthsv:0.2.0 and :latest), labelled with
+  # the version and commit, and its digest printed in the job summary so a
+  # workflow input can pin it. Needs the suite to have passed in the image.
+  publish-image:
+    name: publish the image on a release tag
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [smoke, container, workflow-lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version from the tag
+        id: v
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          [ "$tag" = "$(tr -d '[:space:]' < VERSION)" ] || { echo "tag v$tag does not match VERSION ($(cat VERSION))"; exit 1; }
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          echo "owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push (linux/amd64)
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            DEPTHSV_VERSION=${{ steps.v.outputs.version }}
+            DEPTHSV_COMMIT=${{ github.sha }}
+          tags: |
+            ghcr.io/${{ steps.v.outputs.owner }}/depthsv:${{ steps.v.outputs.version }}
+            ghcr.io/${{ steps.v.outputs.owner }}/depthsv:latest
+      - name: Record the digest
+        run: |
+          {
+            echo "## depthsv image"
+            echo
+            echo "- \`ghcr.io/${{ steps.v.outputs.owner }}/depthsv:${{ steps.v.outputs.version }}\`"
+            echo "- digest: \`${{ steps.push.outputs.digest }}\`"
+            echo
+            echo "Pin it in a workflow input as \`ghcr.io/${{ steps.v.outputs.owner }}/depthsv@${{ steps.push.outputs.digest }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"

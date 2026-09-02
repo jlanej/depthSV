@@ -153,8 +153,12 @@ export_one() {                     # export_one <name> <method>
         fi
     fi
 
+    # Provenance travels with the summary: the pipeline version and commit,
+    # R and htslib. The exported table itself carries no meta-lines, so any
+    # reader that takes the first line as the header keeps working.
     Rscript "$rscript" --input "$tmp" --counts "$counts" --alpha "$alpha" --minCount "$min_count" \
         --name "$name" --method "$meth" --regionsListed "$n_regions" --shards "${#shards[@]}" \
+        --version "$(dsv_version)" --htslib "$(tabix --version 2>/dev/null | head -n 1 || echo unknown)" \
         ${perm_opt[@]+"${perm_opt[@]}"} --out "$summary" --hits "$hits" \
         || dsv_die "$name.$meth: the summary step failed"
     rm -f "$counts"

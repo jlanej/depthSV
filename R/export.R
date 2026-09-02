@@ -34,6 +34,8 @@ option_list <- list(
   make_option("--method",  type = "character", default = ""),
   make_option("--regionsListed", type = "integer", default = NA_integer_),
   make_option("--shards",  type = "integer",   default = NA_integer_),
+  make_option("--version", type = "character", default = "unknown", help = "depthSV version and commit"),
+  make_option("--htslib",  type = "character", default = "unknown", help = "tabix/htslib version string"),
   make_option("--out",     type = "character", help = "summary tsv"),
   make_option("--hits",    type = "character", help = "hits tsv")
 )
@@ -114,11 +116,13 @@ fmt <- function(x) if (is.na(x)) "NA" else formatC(x, digits = 6, format = "g")
 summary <- data.table(k = c(
   "analysis", "method", "regions_listed", "shards", "rows_in", "rows_suppressed", "min_count",
   "regions_exported", "samples_max", "lambda_gc", "alpha", "bonferroni_p", "hits_bonferroni",
-  "perms", "perm_df", "perm_threshold_stat", "perm_threshold_p", "m_eff", "hits_empirical", "perm_note"),
+  "perms", "perm_df", "perm_threshold_stat", "perm_threshold_p", "m_eff", "hits_empirical", "perm_note",
+  "depthsv_version", "r_version", "htslib", "exported_at"),
   v = c(
   opt$name, opt$method, opt$regionsListed, opt$shards, rows_in, rows_sup, opt$minCount,
   M, if (M) max(as.numeric(d$N), na.rm = TRUE) else 0, fmt(lambda_gc(p)), opt$alpha, fmt(bonf), hits_bonf,
-  B, df, fmt(thr), fmt(thr_p), fmt(m_eff), hits_emp, perm_note))
+  B, df, fmt(thr), fmt(thr_p), fmt(m_eff), hits_emp, perm_note,
+  opt$version, R.version.string, opt$htslib, format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")))
 fwrite(summary, opt$out, sep = "\t", col.names = FALSE)
 
 message(sprintf("[export] %s.%s: %d regions (%d suppressed at min_count=%d), lambda=%s, Bonferroni p<=%s: %d hit(s)%s",

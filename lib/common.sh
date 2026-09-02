@@ -71,9 +71,14 @@ dsv_require_cmd() {
     done
 }
 
+# A URL (gs://, https://, ...) is accepted as-is: htslib reads indexed files
+# remotely, which is how a cloud task streams the matrix instead of copying it.
+dsv_is_url() { case "$1" in *://*) return 0 ;; *) return 1 ;; esac; }
+
 dsv_require_file() {
     local f
     for f in "$@"; do
+        dsv_is_url "$f" && continue
         [ -s "$f" ] || dsv_die "required file missing or empty: $f"
     done
 }
@@ -107,7 +112,11 @@ dsv_load_modules() {
 
 dsv_header() {                     # dsv_header <file.gz>
     set +o pipefail
-    gzip -cd "$1" | head -n 1
+    if dsv_is_url "$1"; then
+        tabix -H "$1" | head -n 1        # remote: through the index
+    else
+        gzip -cd "$1" | head -n 1
+    fi
     set -o pipefail
 }
 
@@ -118,7 +127,7 @@ dsv_header() {                     # dsv_header <file.gz>
 
 dsv_resolve_contig() {             # dsv_resolve_contig <indexed.gz> <chrom>
     local f="$1" c="$2" hit
-    [ -s "${f}.tbi" ] || [ -s "${f}.csi" ] || dsv_die "no tabix index beside $f (run: tabix -p bed $f)"
+    dsv_is_url "$f" || [ -s "${f}.tbi" ] || [ -s "${f}.csi" ] || dsv_die "no tabix index beside $f (run: tabix -p bed $f)"
     hit="$(tabix -l "$f" | awk -v c="$c" '$0 == c || $0 == "chr" c || "chr" $0 == c {print; exit}')"
     [ -n "$hit" ] || dsv_die "chromosome '$c' is not present in $f (contigs: $(tabix -l "$f" | tr '\n' ' '))"
     printf '%s\n' "$hit"
@@ -163,7 +172,9 @@ dsv_output_params() { printf '%s.params\n' "$1"; }
 DSV_SIG_HASH_BYTES="${DSV_SIG_HASH_BYTES:-268435456}"   # 256 MB
 dsv_file_sig() {                   # dsv_file_sig <file>
     local size
-    if [ -e "$1" ]; then
+    if dsv_is_url "$1"; then
+        printf '%s:url' "$1"            # remote objects are identified by name
+    elif [ -e "$1" ]; then
         size="$(wc -c < "$1" | tr -d ' ')"
         if [ "$size" -le "$DSV_SIG_HASH_BYTES" ]; then
             printf '%s:%s:cksum=%s' "$1" "$size" "$(cksum < "$1" | awk '{print $1}')"
@@ -177,6 +188,20 @@ dsv_file_sig() {                   # dsv_file_sig <file>
 
 # Checksum of a script, so an edited driver invalidates its own outputs.
 dsv_script_sig() { cksum < "$1" | awk '{print $1}'; }
+
+# The pipeline's version and the commit it runs from: VERSION at the root,
+# COMMIT when the image was built, else git. Provenance for the export.
+dsv_version() {
+    local v="unknown" c=""
+    [ ! -s "$DSV_ROOT/VERSION" ] || v="$(tr -d '[:space:]' < "$DSV_ROOT/VERSION")"
+    if [ -s "$DSV_ROOT/COMMIT" ]; then
+        c="$(tr -d '[:space:]' < "$DSV_ROOT/COMMIT")"
+    elif command -v git >/dev/null 2>&1; then
+        c="$(git -C "$DSV_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+        [ -z "$c" ] || [ -z "$(git -C "$DSV_ROOT" status --porcelain 2>/dev/null | head -n 1)" ] || c="$c-dirty"
+    fi
+    printf 'depthSV %s%s\n' "$v" "${c:+ ($c)}"
+}
 
 # Clear anything a previous partial run left behind. With force=1 the
 # finished result and its markers go too, so a forced run that then fails
