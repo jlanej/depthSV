@@ -111,6 +111,10 @@ ex_join_dir() {
 # analysis filenames do not: without it, rerunning after an EX_NDIM change
 # would skip every analysis as already complete and hand back stale results.
 ex_assoc_dir() { printf '%s/%s/assoc_ndim%s\n' "$EX_RUN_DIR" "$1" "$EX_NDIM"; }
+# The export of that directory: one table, summary and hits per analysis.
+ex_export_dir() { printf '%s/%s/export_ndim%s\n' "$EX_RUN_DIR" "$1" "$EX_NDIM"; }
+# SV-callset recovery output for one mode.
+ex_sv_dir() { printf '%s/sv_recovery/%s\n' "$EX_WORK_DIR" "$1"; }
 
 # A mode is ready once 00 and 01 have produced its inputs and 01 finished
 # the mode (prepared.ok); a prepare that died part-way leaves no marker.
@@ -155,6 +159,10 @@ ex_export_dsv_env() {              # ex_export_dsv_env <mode>
     export DSV_MIN_OBS="$EX_MIN_OBS"
     export DSV_MAX_SHARE="$EX_MAX_SHARE"
     export DSV_WINSOR_LOG2="$EX_WINSOR_LOG2"
+    export DSV_PERMS="$EX_PERMS"
+    export DSV_PERM_SEED="$EX_PERM_SEED"
+    export DSV_MIN_COUNT="$EX_MIN_COUNT"
+    DSV_EXPORT_DIR="$(ex_export_dir "$mode")"; export DSV_EXPORT_DIR
     export DSV_JOBS="$EX_JOBS"
     export DSV_THREADS="$EX_THREADS"
 

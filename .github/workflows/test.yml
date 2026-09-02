@@ -79,6 +79,9 @@ jobs:
         run: |
           for f in preamble/ndim.txt preamble/ndim/ndim_by_mode.tsv inputs/run.env \
                    eval/standard/summary.md eval/fast/summary.md eval/standard/checks.tsv \
+                   work/standard/export_ndim4/mtdna_cn.linear.txt.gz \
+                   work/standard/export_ndim4/mtdna_cn.linear.summary.tsv \
+                   sv_recovery/standard/sv_recovery_summary.tsv sv_recovery/standard/recommended_ndim.txt \
                    compare/summary.md compare/calibration.tsv \
                    compare/standard_vs_fast/concordance.tsv \
                    profile/profile_report.md profile/timings.tsv; do

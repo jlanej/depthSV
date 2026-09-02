@@ -712,9 +712,9 @@ is the coding-and-QC commit that carries this section.
 | §1.2 Sex-chromosome ploidy | fixed | PR3: `--sex`/`--sex-col`/`--par` on the correction, `conf/par.grch3[78].bed`, chrY fitted on males only, example runs with it and checks that chrX carries no sex signal |
 | §1.3 Floor coding / single-sample leverage | fixed | PR3: log2 winsorised at `--winsor-log2` (−3), `MAXSHARE` on every row, `--max-share` (0.5) skip |
 | §1.4 Cox numerics | fixed | PR1: `coxph()` reference assertion; PR3: the floor and leverage filter above, `--robust` |
-| §1.5 Effective number of tests, threshold | open | PR4 |
-| §1.6 Relatedness | open | PR4 (structured null, unrelated-set sweep); `--robust` and `rank-int` landed in PR3 but are not a fix |
-| §1.7 Marchenko–Pastur ndim | partly | `dc3a42c` corrected the stated justification; validation against the SV callset is PR4 |
+| §1.5 Effective number of tests, threshold | fixed | `d6480d8` (PR4a): `--perms` max-|t| per shard, `scripts/export.sh` with the Westfall–Young threshold, M_eff, Bonferroni and λ; the example exports every analysis |
+| §1.6 Relatedness | partly | PR4b: the example runs the mtDNA phenotypes and nulls on the KING-unrelated set, draws a structured null from the kinship (`--make-king square` in the preamble) and a coverage-PC null; the GENESIS path is still untested |
+| §1.7 Marchenko–Pastur ndim | partly | `dc3a42c` corrected the stated justification; PR4b adds `06_sv_recovery.sh`, recovery of NYGC-callset deletions as a function of ndim with the MP count marked and a plateau recommendation; bin standardisation before the SVD is upstream (NGS-PCA) |
 | §1.8 Logistic separation | fixed | PR1: `LRT_P`, `CONVERGED`, null deviance once |
 | §1.9 Smaller | partly | `--min-cases`, `LOG10P`, explicit binary coding (PR1); rank-INT, robust SEs, no mean imputation (PR3); the rest open |
 | §2.1 Stats merge at ≥ 10 chunks | fixed | `dc3a42c` stopgap, `beaf00d` sorted merge + ten-chunk test |
@@ -726,6 +726,6 @@ is the coding-and-QC commit that carries this section.
 | §3.3 Logistic cost | open | score test not implemented |
 | §3.4 Region parsed once per phenotype | open | |
 | §3.5 Text storage | open | |
-| §4 Deployment | partly | PR3: WDL carries the ploidy, winsor and leverage inputs; image publish, streaming localisation, runtime attributes are PR5 |
-| §5 Example and preamble | fixed / partly | `42f2823`: lock ownership, `.selected_modes`, run.env, provenance; PR3: ploidy wiring, INT rows, new sex-table checks; the unrelated-set sweep and SV-callset validation are PR4 |
+| §4 Deployment | partly | PR3: WDL carries the ploidy, winsor and leverage inputs; PR4a: `--min-count` suppression in the export (All of Us), permutation inputs in the WDL; image publish, streaming localisation, runtime attributes are PR5 |
+| §5 Example and preamble | fixed / partly | `42f2823`: lock ownership, `.selected_modes`, run.env, provenance; PR3: ploidy wiring, INT rows, new sex-table checks; PR4b: export per mode, unrelated-set and structured-null rows, SV-callset recovery stage |
 | §6 Hygiene | partly | credit and review docs landed; version stamp, `CITATION.cff` authors, release tag are PR5 |

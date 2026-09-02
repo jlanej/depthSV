@@ -43,6 +43,7 @@ option_list <- list(
   make_option("--pheno",    type = "character", default = NULL, help = "phenotypes.tsv, for the male count chrY tests must equal"),
   make_option("--samples",  type = "character", default = NULL, help = "samples.txt: the matrix columns, so that count covers tested samples only"),
   make_option("--ploidy",   type = "character", default = "1", help = "1 if the correction ran with the ploidy model (EX_PLOIDY)"),
+  make_option("--export",   type = "character", default = NULL, help = "export directory of this mode (scripts/export.sh), for the thresholds"),
   make_option("--out",      type = "character", help = "output directory")
 )
 opt <- parse_args(OptionParser(option_list = option_list))
@@ -147,9 +148,33 @@ for (i in seq_len(nrow(manifest))) {
   top <- d[order(-abs_stat)]
 
   # Checks key on the analysis family: the covariate-adjusted variants
-  # (preamble.sh ran) and the inverse-normal-transformed ones carry the same
-  # truth as their plain namesakes.
-  fam <- sub("_int$", "", sub("_adj$", "", nm))
+  # (preamble.sh ran), the inverse-normal-transformed ones and the
+  # unrelated-set ones carry the same truth as their plain namesakes.
+  fam <- sub("_int$", "", sub("_unrel$", "", sub("_adj$", "", nm)))
+  unrel <- grepl("_unrel", nm)
+
+  # The export's verdict for this analysis: suppression, the empirical
+  # family-wise threshold and what passes it.
+  exp_file <- if (!is.null(opt$export)) file.path(opt$export, sprintf("%s.%s.summary.tsv", nm, method)) else ""
+  if (nzchar(exp_file) && file.exists(exp_file)) {
+    es <- fread(exp_file, header = FALSE, col.names = c("k", "v"))
+    # Base indexing on purpose: inside es[...] the argument would be shadowed
+    # by the column of the same name.
+    ev <- function(key_name) { x <- es$v[es$k == key_name]; if (length(x)) x[1] else NA }
+    add(nm, "export", "INFO",
+        sprintf("%s regions, %s suppressed at min_count=%s; lambda %s; Bonferroni hits %s; empirical |t|>=%s (p<=%s, M_eff %s): %s hits",
+                ev("regions_exported"), ev("rows_suppressed"), ev("min_count"), ev("lambda_gc"),
+                ev("hits_bonferroni"), ev("perm_threshold_stat"), ev("perm_threshold_p"), ev("m_eff"), ev("hits_empirical")),
+        ev("perm_note"))
+    hits_file <- sub("\\.summary\\.tsv$", ".hits.tsv", exp_file)
+    if (fam %in% c("mtdna_cn", "log2_mtdna_cn") && file.exists(hits_file) && is.finite(as.numeric(ev("perm_threshold_stat")))) {
+      hv <- fread(hits_file)
+      n_m_hits <- if (nrow(hv)) sum(chrom_class(hv[[1]]) == "chrM" & grepl("empirical", hv$PASSES)) else 0L
+      add(nm, "chrM_passes_empirical_threshold", if (n_m_hits >= 1) "PASS" else "WARN",
+          sprintf("%d chrM bins past the empirical threshold", n_m_hits),
+          "the phenotype's own chromosome must survive the genome-wide max-T threshold")
+    }
+  }
 
   if (fam %in% c("mtdna_cn", "log2_mtdna_cn")) {
     n_m <- sum(d$class == "chrM")
@@ -187,7 +212,7 @@ for (i in seq_len(nrow(manifest))) {
     # chrY region is fitted on the males alone: N there must equal the male
     # count. (A linear test of SEX itself has no variance within the males,
     # so this lives on the mtDNA family.)
-    if (ploidy && fam == "mtdna_cn") {
+    if (ploidy && fam == "mtdna_cn" && !unrel) {
       dy <- d[toupper(sub("^chr", "", CHROM)) == "Y"]
       if (!nrow(dy)) {
         add(nm, "chrY_tested_in_males", "WARN", "no chrY bins tested", "")
@@ -277,6 +302,32 @@ for (i in seq_len(nrow(manifest))) {
     add(nm, "null_lambda_all_bins", "INFO", sprintf("%.3f", lambda_gc(d$P)),
         "includes chrX/Y/M; moves with a single sex draw in small cohorts")
     add(nm, "null_min_p", "INFO", sprintf("%.2g over %d regions", min(d$P), nrow(d)))
+  }
+
+  if (fam == "cov_pc1_null") {
+    # Coverage PC1 plus noise as the phenotype: half its variance is the
+    # structure the correction removed. A test that does not condition on
+    # the removed PCs is deflated here (lambda ~ 0.5); a correct one is not.
+    dn <- d[class == "autosome"]; if (nrow(dn) < 50) dn <- d
+    lam <- lambda_gc(dn$P)
+    hi <- if (smoke) 1.6 else 1.25
+    status <- if (is.na(lam)) "WARN" else if (lam < 0.7) "FAIL" else if (lam > hi) "WARN" else "PASS"
+    add(nm, "pc_null_lambda", status, sprintf("%.3f (%d bins)", lam, nrow(dn)),
+        "coverage PC1 + noise: lambda ~0.5 if the removed PCs were missing from the model, ~1 with them")
+  }
+
+  if (fam == "structured_null") {
+    # y ~ MVN(0, h2 * 2K + (1 - h2) I) from the KING kinship. On the
+    # unrelated set it must be calibrated; over everyone, whatever inflation
+    # appears is the relatedness effect a permuted null cannot show.
+    dn <- d[class == "autosome"]; if (nrow(dn) < 50) dn <- d
+    lam <- lambda_gc(dn$P)
+    band <- if (smoke) c(0.6, 1.6) else c(0.85, 1.25)
+    ok_l <- !is.na(lam) && lam >= band[1] && lam <= band[2]
+    add(nm, "structured_null_lambda", if (unrel) { if (ok_l) "PASS" else "WARN" } else "INFO",
+        sprintf("%.3f (%d autosomal bins)", lam, nrow(dn)),
+        if (unrel) "MVN null with h2 x 2*kinship on the KING-unrelated set; should be calibrated"
+        else "MVN null with h2 x 2*kinship over everyone; compare with the unrelated-set run")
   }
 }
 

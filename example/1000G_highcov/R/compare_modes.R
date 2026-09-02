@@ -73,7 +73,8 @@ lambda_gc <- function(p) {
 # at the first one.
 mf_lines <- readLines(opt$analyses)
 mf_lines <- mf_lines[!grepl("^\\s*#", mf_lines) & nzchar(trimws(mf_lines))]
-manifest <- fread(text = mf_lines, header = FALSE, sep = "\t", col.names = c("name", "method", "model"))
+manifest <- fread(text = mf_lines, header = FALSE, sep = "\t", fill = TRUE)
+setnames(manifest, 1:3, c("name", "method", "model"))
 
 r_pass <- if (opt$profile == "smoke") 0.95 else 0.99
 

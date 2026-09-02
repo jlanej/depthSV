@@ -31,7 +31,7 @@
 # mode uses.
 #
 # Internal entry points (used by this script's own submissions):
-#   --stage join-exec|dispatch|unit|eval-exec --mode <mode>
+#   --stage join-exec|dispatch|unit|eval-exec|sv-recovery --mode <mode>
 # ---------------------------------------------------------------------------
 
 EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
@@ -161,6 +161,18 @@ maybe_finalize() {
     date +%s > "$lock_dir/epoch"
     bash "$EX_EXAMPLE_DIR/04_compare_modes.sh" || { rc=1; dsv_log "WARN: 04_compare_modes.sh exited non-zero"; }
     bash "$EX_EXAMPLE_DIR/05_profile.sh"       || { rc=1; dsv_log "WARN: 05_profile.sh exited non-zero"; }
+    # The SV-callset recovery needs cores and, on a real run, a download:
+    # its own job under SLURM, inline locally.
+    if [ "$EX_SV_RECOVERY" = "1" ]; then
+        if [ "$(ex_runner)" = slurm ]; then
+            # shellcheck disable=SC2086
+            submit standard sv-recovery $EX_SBATCH_UNIT \
+                --job-name "dsvx-sv-recovery" --output "$EX_LOG_DIR/%x.%j.out" \
+                -- --stage sv-recovery --mode standard > /dev/null
+        else
+            bash "$EX_EXAMPLE_DIR/06_sv_recovery.sh" || { rc=1; dsv_log "WARN: 06_sv_recovery.sh exited non-zero"; }
+        fi
+    fi
     rm -rf "$lock_dir"
     return "$rc"
 }
@@ -297,6 +309,10 @@ eval-exec)
     bash "$EX_EXAMPLE_DIR/03_evaluate.sh" --mode "$mode_arg" || rc=$?
     maybe_finalize || rc=1
     exit "$rc"
+    ;;
+
+sv-recovery)
+    bash "$EX_EXAMPLE_DIR/06_sv_recovery.sh" --mode "$mode_arg"
     ;;
 
 *)

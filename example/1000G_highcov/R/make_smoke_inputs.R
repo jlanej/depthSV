@@ -89,6 +89,31 @@ for (j in seq_len(n)) {
 bin_effect <- exp(rnorm(n_bins, sd = 0.08))
 depth <- target * bin_effect * matrix(exp(rnorm(n_bins * n, sd = 0.035)), n_bins, n)
 
+# Known deletions on the autosomal slice, for the SV-recovery stage: twelve
+# deletions of 5-30 kb with carrier frequencies from 5% to 40%, one copy
+# lost in carriers (a fifth of them lose both). Drawn after everything
+# above, so the rest of the tree is unchanged by their presence; the same
+# seed gives the fast tree the same carriers.
+set.seed(opt$seed + 2000L)
+auto_start <- min(regions$START[auto_rows]); auto_end <- max(regions$STOP[auto_rows])
+del_len  <- c(5, 8, 10, 15, 20, 30, 5, 10, 15, 20, 8, 12) * 1000L
+del_freq <- c(0.05, 0.10, 0.20, 0.30, 0.40, 0.10, 0.20, 0.05, 0.30, 0.15, 0.40, 0.25)
+slot <- (auto_end - auto_start) %/% length(del_len)
+calls <- list()
+for (i in seq_along(del_len)) {
+  s <- as.integer((auto_start + (i - 1L) * slot + 10000L) %/% bin * bin)   # inside its slot, bin-aligned
+  e <- s + del_len[i]
+  rows <- which(auto_rows & regions$START >= s & regions$STOP <= e)
+  n_car <- max(2L, round(del_freq[i] * n))
+  car <- sort(sample.int(n, n_car))
+  hom <- car[seq_len(round(0.2 * n_car))]
+  depth[rows, car] <- depth[rows, car] * 0.5
+  if (length(hom)) depth[rows, hom] <- depth[rows, hom] * 0.04
+  calls[[i]] <- data.table(CHROM = "chr20", START = s, END = e, ID = sprintf("smokeDEL%02d", i),
+                           N_CARRIERS = n_car, CARRIERS = paste(qc$SAMPLE_ID[car], collapse = ","))
+}
+calls <- rbindlist(calls)
+
 if (opt$jitter > 0) {
   set.seed(opt$seed + 1000L)
   depth <- depth * exp(matrix(rnorm(n_bins * n, sd = opt$jitter), n_bins, n)) * 1.002
@@ -104,6 +129,8 @@ for (j in seq_len(n)) {
          f, sep = "\t", col.names = FALSE)
   if (system2("bgzip", c("-f", shQuote(f))) != 0L) stop("bgzip failed on ", f, call. = FALSE)
 }
+
+fwrite(calls, file.path(opt$out, "sv_calls.tsv"), sep = "\t")
 
 writeLines(c(sprintf("generated\t%s", format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")),
              sprintf("qc\t%s", opt$qc),

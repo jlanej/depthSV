@@ -198,6 +198,20 @@ if [ "$do_geno" -eq 1 ]; then
                --king-cutoff "$EX_GENO_KING_CUTOFF" --out "$G/king"
     n_unrel="$(grep -vc '^#' "$G/king.king.cutoff.in.id")"
     dsv_log "unrelated set: $n_unrel samples ($(grep -vc '^#' "$G/king.king.cutoff.out.id") removed)"
+    # The unrelated set as bare IDs, for the restricted sweep, and the
+    # kinship matrix itself, for the structured null the prepare stage draws.
+    grep -v '^#' "$G/king.king.cutoff.in.id" | awk '{print $NF}' > "$EX_PREAMBLE_DIR/unrelated.txt.tmp"
+    mv "$EX_PREAMBLE_DIR/unrelated.txt.tmp" "$EX_PREAMBLE_DIR/unrelated.txt"
+    if [ "$force" -eq 0 ] && [ -s "$EX_PREAMBLE_DIR/kinship.king" ] && [ -s "$EX_PREAMBLE_DIR/kinship.king.id" ]; then
+        dsv_log "kinship matrix present"
+    else
+        dsv_log "KING kinship matrix (square) for the structured null"
+        ex_timed preamble geno-kinship all -- \
+            plink2 --pfile "$G/pruned" --threads "$threads" --memory "$mem" --silent \
+                   --make-king square --out "$G/kinship"
+        cp "$G/kinship.king" "$EX_PREAMBLE_DIR/kinship.king.tmp" && mv "$EX_PREAMBLE_DIR/kinship.king.tmp" "$EX_PREAMBLE_DIR/kinship.king"
+        cp "$G/kinship.king.id" "$EX_PREAMBLE_DIR/kinship.king.id"
+    fi
 
     dsv_log "PCA on the unrelated set ($EX_GENO_NPC PCs, allele weights)"
     ex_timed preamble geno-pca all -- \
@@ -233,6 +247,8 @@ fi
     fi
     if [ -s "$EX_PREAMBLE_DIR/covariates.tsv" ]; then
         echo "- genotype PCs: covariates.tsv for $(( $(grep -c . "$EX_PREAMBLE_DIR/covariates.tsv") - 1 )) samples; the models use SEX + GPC1..GPC${EX_N_GPCS} (EX_N_GPCS / EX_COVARIATES)"
+        [ ! -s "$EX_PREAMBLE_DIR/unrelated.txt" ] \
+            || echo "- KING-unrelated set: $(grep -c . "$EX_PREAMBLE_DIR/unrelated.txt") samples (unrelated.txt) for the *_unrel sweep; kinship.king draws the structured null (EX_STRUCTURED_H2=$EX_STRUCTURED_H2)"
         echo
         cat "$EX_PREAMBLE_DIR/summary.md" 2>/dev/null | sed -n '2,$p' || true
     else

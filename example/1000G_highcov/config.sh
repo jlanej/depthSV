@@ -203,8 +203,46 @@ EX_PLOIDY="${EX_PLOIDY:-1}"
 EX_PAR="${EX_PAR:-$EX_EXAMPLE_DIR/../../conf/par.grch38.bed}"
 EX_WINSOR_LOG2="${EX_WINSOR_LOG2:--3}"
 
-# Seed for the permuted null phenotype (MTDNA_CN_NULL).
+# Seed for the permuted null phenotype (MTDNA_CN_NULL); the structured null
+# and the coverage-PC null derive their seeds from it.
 EX_PHENO_SEED="${EX_PHENO_SEED:-20260818}"
+# Heritability of the structured null y ~ MVN(0, h2 * 2K + (1 - h2) I)
+# drawn from the preamble's KING kinship.
+EX_STRUCTURED_H2="${EX_STRUCTURED_H2:-0.5}"
+
+# Permutations of the response per linear analysis (scripts/analyze.sh
+# --perms), folded by the export step into the empirical genome-wide
+# threshold; the seed is shared by every shard.
+if [ "${EX_SMOKE}" = "1" ]; then
+    EX_PERMS="${EX_PERMS:-50}"
+else
+    EX_PERMS="${EX_PERMS:-100}"
+fi
+EX_PERM_SEED="${EX_PERM_SEED:-1}"
+# Export: rows with N, NCase or NControl below this are suppressed.
+EX_MIN_COUNT="${EX_MIN_COUNT:-20}"
+
+# --- SV-callset recovery (06_sv_recovery.sh) ------------------------------
+#
+# How well the corrected depth recovers known deletions as a function of
+# ndim: carriers vs non-carriers of NYGC-callset deletions at several
+# correction depths, so the Marchenko-Pastur count can be judged on the
+# outcome that matters. Real runs download the callset VCF (~1 GB) once
+# into EX_WORK_DIR/sv_callset; smoke runs use the deletions the simulated
+# tree carries. EX_SV_CALLS points at a prepared calls table instead.
+EX_SV_RECOVERY="${EX_SV_RECOVERY:-1}"
+EX_SV_CALLSET_URL="${EX_SV_CALLSET_URL:-https://ftp.1000genomes.ebi.ac.uk/vol1/ftp/data_collections/1000G_2504_high_coverage/working/20210124.SV_Illumina_Integration/1KGP_3202.gatksv_svtools_novelins.freeze_V3.wAF.vcf.gz}"
+EX_SV_CALLS="${EX_SV_CALLS:-}"
+EX_SV_MIN_LEN="${EX_SV_MIN_LEN:-5000}"          # bp; bins are 1 kb
+EX_SV_MIN_AF="${EX_SV_MIN_AF:-0.02}"            # carrier frequency band
+EX_SV_MAX_AF="${EX_SV_MAX_AF:-0.5}"
+if [ "${EX_SMOKE}" = "1" ]; then
+    EX_SV_MAX_DELS="${EX_SV_MAX_DELS:-12}"
+    EX_SV_NDIMS="${EX_SV_NDIMS:-0 2 4 8}"
+else
+    EX_SV_MAX_DELS="${EX_SV_MAX_DELS:-200}"
+    EX_SV_NDIMS="${EX_SV_NDIMS:-0 5 10 20 40 60}"  # plus the MP count and EX_NDIM
+fi
 
 # --- parallelism (within one unit of work) ---------------------------------
 #

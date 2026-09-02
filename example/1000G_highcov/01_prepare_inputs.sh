@@ -75,9 +75,16 @@ for mode in $EX_MODES; do
     if [ "$mode" != standard ] && [ -s "$(ex_inputs_dir standard)/phenotypes.tsv" ]; then
         null_opt=(--null-from "$(ex_inputs_dir standard)/phenotypes.tsv")
     fi
+    # The preamble's relatedness outputs, when it ran with genotypes: the
+    # KING-unrelated set restricts the *_UNREL phenotypes and the kinship
+    # matrix draws the structured null.
+    unrel_opt=(); kin_opt=()
+    [ ! -s "$EX_PREAMBLE_DIR/unrelated.txt" ] || unrel_opt=(--unrelated "$EX_PREAMBLE_DIR/unrelated.txt")
+    [ ! -s "$EX_PREAMBLE_DIR/kinship.king" ] || kin_opt=(--kinship "$EX_PREAMBLE_DIR/kinship" --h2 "$EX_STRUCTURED_H2")
     Rscript "$EX_EXAMPLE_DIR/R/prepare_inputs.R" \
         --qc "$EX_M_QC_TABLE" --pcs "$EX_M_PCS_FILE" \
         ${median_opt[@]+"${median_opt[@]}"} ${cov_opt[@]+"${cov_opt[@]}"} ${null_opt[@]+"${null_opt[@]}"} \
+        ${unrel_opt[@]+"${unrel_opt[@]}"} ${kin_opt[@]+"${kin_opt[@]}"} \
         --suffix "$EX_SAMPLE_SUFFIX" --seed "$EX_PHENO_SEED" \
         --out "$in_dir" 2>&1 | tee "$in_dir/prepare.summary.txt" >&2
 
@@ -91,6 +98,10 @@ for mode in $EX_MODES; do
         adj_nosex="$(printf '%s' "+$EX_COVARIATES" | sed -e 's/+SEX+/+/g' -e 's/+SEX$//')"
         [ "$adj_nosex" = "+" ] && adj_nosex=""
     fi
+    # Rows for the unrelated-set and structured-null phenotypes exist only
+    # when prepare wrote those columns (the preamble ran with genotypes).
+    sfx=""; [ -z "$adj" ] || sfx="_adj"
+    has_col() { head -n 1 "$in_dir/phenotypes.tsv" | tr '\t' '\n' | grep -qx "$1"; }
     {
         printf '# depthSV 1000G example analyses. Format: name<TAB>method<TAB>model[<TAB>flags]\n'
         printf '# The depth term must be named cov_resids (see conf/phenotypes.example.tsv).\n'
@@ -98,30 +109,29 @@ for mode in $EX_MODES; do
         printf '# The *_int rows test the inverse-normal-transformed phenotype with robust\n'
         printf '# SEs: MTDNA_CN is right-skewed, and the untransformed rows keep the\n'
         printf '# effect-size truth check (slope ~1 on chrM for the log2 phenotype).\n'
+        printf '# The *_unrel rows restrict the same phenotypes to the KING-unrelated set;\n'
+        printf '# structured_null is MVN(0, h2 2K + (1-h2) I) from the kinship, and\n'
+        printf '# cov_pc1_null is coverage PC1 plus noise (deflated unless the removed\n'
+        printf '# PCs are in the model).\n'
         printf '#\n'
         printf '# SEX appears twice on purpose. Under the ploidy model chrX is normalised\n'
         printf '# by its expected copies, so a sex signal left on chrX means the sex table\n'
         printf '# is misaligned: the linear run carries that check. The logistic run\n'
         printf '# exercises that engine on the same response.\n'
-        if [ -n "$adj" ]; then
-            printf '# Covariates from the preamble: %s (EX_COVARIATES).\n' "$EX_COVARIATES"
-            printf 'mtdna_cn\tlinear\tMTDNA_CN~cov_resids\n'
-            printf 'mtdna_cn_adj\tlinear\tMTDNA_CN~cov_resids%s\n' "$adj"
-            printf 'mtdna_cn_int_adj\tlinear\tMTDNA_CN~cov_resids%s\trank-int,robust\n' "$adj"
-            printf 'log2_mtdna_cn_adj\tlinear\tLOG2_MTDNA_CN~cov_resids%s\n' "$adj"
-            printf 'mtdna_cn_null_adj\tlinear\tMTDNA_CN_NULL~cov_resids%s\n' "$adj"
-            printf 'mtdna_cn_null_int_adj\tlinear\tMTDNA_CN_NULL~cov_resids%s\trank-int,robust\n' "$adj"
-            printf 'sex_linear_adj\tlinear\tSEX~cov_resids%s\n' "$adj_nosex"
-            printf 'inferred_sex\tlogistic\tSEX~cov_resids\n'
-        else
-            printf 'mtdna_cn\tlinear\tMTDNA_CN~cov_resids\n'
-            printf 'mtdna_cn_int\tlinear\tMTDNA_CN~cov_resids\trank-int,robust\n'
-            printf 'log2_mtdna_cn\tlinear\tLOG2_MTDNA_CN~cov_resids\n'
-            printf 'mtdna_cn_null\tlinear\tMTDNA_CN_NULL~cov_resids\n'
-            printf 'mtdna_cn_null_int\tlinear\tMTDNA_CN_NULL~cov_resids\trank-int,robust\n'
-            printf 'sex_linear\tlinear\tSEX~cov_resids\n'
-            printf 'inferred_sex\tlogistic\tSEX~cov_resids\n'
-        fi
+        [ -z "$adj" ] || printf '# Covariates from the preamble: %s (EX_COVARIATES).\n' "$EX_COVARIATES"
+        printf 'mtdna_cn\tlinear\tMTDNA_CN~cov_resids\n'
+        [ -z "$adj" ] || printf 'mtdna_cn_adj\tlinear\tMTDNA_CN~cov_resids%s\n' "$adj"
+        printf 'mtdna_cn_int%s\tlinear\tMTDNA_CN~cov_resids%s\trank-int,robust\n' "$sfx" "$adj"
+        printf 'log2_mtdna_cn%s\tlinear\tLOG2_MTDNA_CN~cov_resids%s\n' "$sfx" "$adj"
+        printf 'mtdna_cn_null%s\tlinear\tMTDNA_CN_NULL~cov_resids%s\n' "$sfx" "$adj"
+        printf 'mtdna_cn_null_int%s\tlinear\tMTDNA_CN_NULL~cov_resids%s\trank-int,robust\n' "$sfx" "$adj"
+        printf 'cov_pc1_null%s\tlinear\tCOV_PC1_NULL~cov_resids%s\n' "$sfx" "$adj"
+        ! has_col MTDNA_CN_UNREL       || printf 'mtdna_cn_unrel%s\tlinear\tMTDNA_CN_UNREL~cov_resids%s\n' "$sfx" "$adj"
+        ! has_col MTDNA_CN_NULL_UNREL  || printf 'mtdna_cn_null_unrel%s\tlinear\tMTDNA_CN_NULL_UNREL~cov_resids%s\n' "$sfx" "$adj"
+        ! has_col STRUCTURED_NULL      || printf 'structured_null%s\tlinear\tSTRUCTURED_NULL~cov_resids%s\n' "$sfx" "$adj"
+        ! has_col STRUCTURED_NULL_UNREL || printf 'structured_null_unrel%s\tlinear\tSTRUCTURED_NULL_UNREL~cov_resids%s\n' "$sfx" "$adj"
+        printf 'sex_linear%s\tlinear\tSEX~cov_resids%s\n' "$sfx" "$adj_nosex"
+        printf 'inferred_sex\tlogistic\tSEX~cov_resids\n'
     } > "$in_dir/analyses.tsv.tmp"
     install_if_changed "$in_dir/analyses.tsv.tmp" "$in_dir/analyses.tsv"
     dsv_log "$mode: analyses -> $(grep -vc '^#' "$in_dir/analyses.tsv") models (covariates: $EX_COVARIATES; ndim $EX_NDIM)"
