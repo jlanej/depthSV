@@ -39,6 +39,8 @@ option_list <- list(
   make_option("--pcs",    type = "character", help = "svd.pcs.txt from the NGS-PCA example"),
   make_option("--median", type = "character", default = NULL,
               help = "NGS-PCA's autosomal.median.txt (SAMPLE, AUTO_HQ_median, N_BINS); optional"),
+  make_option("--covariates", type = "character", default = NULL,
+              help = "preamble covariates.tsv (SAMPLE, GPC1..); merged into the phenotype table"),
   make_option("--suffix", type = "character", default = ".by1000.",
               help = "trailing suffix to strip from upstream sample IDs [default %default]"),
   make_option("--seed",   type = "integer",   default = 20260818L),
@@ -170,6 +172,21 @@ pheno[, SEX := fifelse(qc$INFERRED_SEX == "M", 1L,
 # analyses.tsv but free to carry.
 for (extra in c("MEAN_AUTOSOMAL_COV", "SUPERPOPULATION", "POPULATION")) {
   if (extra %in% names(qc)) pheno[[extra]] <- qc[[extra]]
+}
+
+# Genotype PCs from the preamble, when it ran. A left join: a sample without
+# covariates keeps its phenotype and drops out of the adjusted models only.
+if (!is.null(opt$covariates)) {
+  cv <- fread(opt$covariates)
+  if (!"SAMPLE" %in% names(cv)) stop(opt$covariates, " lacks a SAMPLE column", call. = FALSE)
+  cv[, SAMPLE := as.character(SAMPLE)]
+  keep <- c("SAMPLE", grep("^GPC[0-9]+$", names(cv), value = TRUE), intersect("GPC_PROJECTED", names(cv)))
+  cv <- cv[, keep, with = FALSE]
+  n_hit <- sum(pheno$SAMPLE %in% cv$SAMPLE)
+  pheno <- merge(pheno, cv, by = "SAMPLE", all.x = TRUE, sort = FALSE)
+  note("[covariates] %d genotype PCs for %d of %d samples merged from %s",
+       length(keep) - 1L - ("GPC_PROJECTED" %in% keep), n_hit, nrow(pheno), basename(opt$covariates))
+  if (n_hit < 0.9 * nrow(pheno)) warn("fewer than 90%% of samples have genotype PCs; adjusted models shrink accordingly")
 }
 
 fwrite(pheno, file.path(opt$out, "phenotypes.tsv"), sep = "\t")

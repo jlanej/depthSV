@@ -51,6 +51,9 @@ dsv_enable_error_trace
 [ "$want_help" -eq 0 ] || dsv_usage
 
 dsv_log "depthSV 1000G example -> $EX_WORK_DIR (smoke=$EX_SMOKE, runner=$(ex_runner), modes: $EX_MODES)"
+dsv_log "ndim=$EX_NDIM ($([ -s "$EX_PREAMBLE_DIR/ndim.txt" ] && echo 'from the preamble' || echo 'default; preamble.sh not run')), covariates: $EX_COVARIATES"
+[ -s "$EX_PREAMBLE_DIR/covariates.tsv" ] \
+    || dsv_log "no preamble covariates: the mtDNA-CN models run unadjusted (submit preamble.sh for genotype PCs and the MP-derived ndim)"
 
 bash "$EX_EXAMPLE_DIR/00_fetch_inputs.sh"
 bash "$EX_EXAMPLE_DIR/01_prepare_inputs.sh"

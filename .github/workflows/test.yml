@@ -66,11 +66,14 @@ jobs:
       - name: Run the example end to end
         env:
           EX_WORK_DIR: /tmp/depthsv-example-smoke
-        run: bash example/1000G_highcov/run.sh --smoke --runner local
+        run: |
+          bash example/1000G_highcov/preamble.sh --smoke --ndim-only
+          bash example/1000G_highcov/run.sh --smoke --runner local
 
       - name: Assert the end state
         run: |
-          for f in eval/standard/summary.md eval/fast/summary.md \
+          for f in preamble/ndim.txt preamble/ndim/ndim_by_mode.tsv \
+                   eval/standard/summary.md eval/fast/summary.md \
                    compare/summary.md compare/calibration.tsv \
                    compare/standard_vs_fast/concordance.tsv \
                    profile/profile_report.md profile/timings.tsv; do

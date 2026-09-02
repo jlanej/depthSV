@@ -81,6 +81,7 @@ these and stops — and what to look at if they complain:
 | `MTDNA_CN` is not `NA` across the board | prepare stops if it is (the phenotype does not exist) |
 | both trees complete: `ls mosdepth_output/*.regions.bed.gz \| wc -l` equals the fast tree's count | samples processed before `COMPARE_FAST_MODE` was on are re-queued upstream; prepare reports the sample-set difference in `inputs/cross_mode_samples.txt` |
 | all three PCA runs from the same container image | the report should reflect mosdepth's mode and the seed, nothing else |
+| `plink2` ≥ 2.00a5 reachable (`EX_PREAMBLE_MODULES`) and Dropbox reachable, for the preamble | otherwise pre-stage the genotype files under `preamble/genotypes/` |
 
 No mosdepth run yet? See [Smoke mode](#smoke-mode-no-cluster-no-crams) —
 the committed NGS-PCA results plus a simulated depth tree run the whole
@@ -97,8 +98,15 @@ export EX_WORK_DIR=/scratch/$USER/depthsv_1000G_highcov
 # site specifics, if any: export EX_SBATCH_EXTRA="--partition=... --account=..."
 # module names, if needed: export DSV_MODULES="parallel R htslib"
 
+sbatch preamble.sh           # once: MP-derived ndim + genotype-PC covariates (24 cores / 248 GB / <24 h)
 bash run.sh                  # 00 -> 01 -> 02: resolve, prepare, submit
 ```
+
+The preamble is optional but is what makes the mtDNA-CN models *reasonable*
+rather than merely correct: without it the sweep runs unadjusted with
+`EX_NDIM=20`; with it, the correction removes the Marchenko-Pastur-determined
+number of coverage PCs and the models adjust for sex and genotype PCs. See
+[Preamble](#preamble-how-many-pcs-and-which-covariates).
 
 While the upstream comparison is still finishing, `bash run.sh --prepare-only`
 runs just the resolution and the checks (the [upstream checklist](#upstream-checklist))
@@ -150,10 +158,72 @@ with a small deterministic perturbation, and labelled as such in
 `inputs/fast/paths.env`. The seed control is never fetched — it is skipped
 in smoke mode unless `EX_NGSPCA_DIR_SEEDCTL` points at a local PC table.
 
+## Preamble: how many PCs, and which covariates
+
+[`preamble.sh`](preamble.sh) is a standalone job (`sbatch preamble.sh` from
+this directory; `#SBATCH` sizes it at 24 cores / 248 GB / 24 h to match the
+upstream NGS-PCA stages, far more than it needs) that settles two decisions
+the association models depend on, before the pipeline runs. Both are
+idempotent and resumable; `bash preamble.sh --smoke` runs both on a laptop
+(ndim from the committed spectrum, genotypes from chr22 only).
+
+**A. How many coverage PCs to remove** — [`R/choose_ndim.R`](R/choose_ndim.R).
+NGS-PCA reports the top 200 singular values of the samples × bins matrix.
+For pure noise they follow the Marchenko–Pastur law, whose upper edge at
+3,202 × 142,070 is a narrow, nearly flat plateau — so the trailing reported
+values pin the noise scale down, and the count of singular values above the
+edge is the number of components distinguishable from noise. The fit
+iterates the noise scale and the count to a fixed point, per mode, and
+`preamble/ndim.txt` is the rounded mean across modes so every tree is
+corrected identically; `config.sh` picks it up as the `EX_NDIM` default. On
+the committed 3,202-sample spectrum the count is **52 at the exact edge and
+42 / 38 / 32 with a 1 / 2 / 5 % margin** — real coverage noise is not iid
+(per-bin variance differs), so the observed plateau decays a little faster
+than MP and the exact-edge count runs high. The default margin is 1 %
+(`EX_MP_MARGIN`, about four Tracy–Widom sd here); `ndim/ndim_by_mode.tsv`
+carries all four counts and `ndim/ndim_mp.png` the fit, so the sensitivity
+is in the open rather than in a default.
+
+**B. Genotype PCs** — the NYGC 30x GRCh38 callset for exactly these 3,202
+samples is published in PLINK 2 format on the
+[PLINK 2.0 resources page](https://www.cog-genomics.org/plink/2.0/resources)
+(`resources/genotype_sources.tsv`: ~3.4 GB of per-chromosome `.pgen.zst`
+plus `.pvar.zst` and the corrected `.psam` with pedigree, sex and
+population — no VCFs, no CRAMs). The recipe is the textbook one, per
+chromosome to bound disk: biallelic A/C/G/T SNPs, MAF ≥ 0.05, missingness
+≤ 1 %, the Anderson et al. 2010 long-range LD regions excluded
+(`resources/long_range_ld_grch38.txt`), `--indep-pairwise 1000kb 1 0.1`;
+merge; KING-robust `--king-cutoff 0.0884` (2nd degree and closer removed);
+`--pca 40 allele-wts` on the unrelated set; projection of every sample onto
+the allele weights with the unrelated set's frequencies; then
+[`R/genotype_pcs.R`](R/genotype_pcs.R) calibrates the projection against
+the in-sample PCs (proportional per PC; the r² is the check), applies the
+same MP-edge count to the genotype eigenvalues, and plots PC1/2, PC3/4 by
+superpopulation with relatives as open points, plus the scree. Output:
+`preamble/covariates.tsv` (`SAMPLE`, `GPC1..GPC40`, `GPC_PROJECTED`,
+superpopulation/population), `gpc_plots.png`, `gpc_calibration.tsv`.
+
+**How it flows into the run.** With `covariates.tsv` present, the prepare
+stage merges the genotype PCs into `phenotypes.tsv` and writes the adjusted
+manifest: `mtdna_cn` (unadjusted, the pure truth check) plus
+`mtdna_cn_adj`, `log2_mtdna_cn_adj`, `mtdna_cn_null_adj` with
+`+SEX+GPC1..GPC10` (`EX_N_GPCS`; or set `EX_COVARIATES` to any `+`-joined
+list of phenotype columns, `none` for unadjusted), `sex_linear` with the
+genotype PCs only, and the logistic run unchanged. The evaluation applies
+each family's checks to its adjusted variant.
+
+Requirements beyond the pipeline's: `plink2` ≥ 2.00a5 (for `--pmerge-list`
+and `--pca allele-wts`; `EX_PREAMBLE_MODULES` names the module if your site
+has one) and outbound HTTPS to Dropbox from the node that runs it — if that
+is blocked, download `resources/genotype_sources.tsv`'s files elsewhere and
+place them as `preamble/genotypes/chr<N>.pgen.zst` / `.pvar.zst` /
+`samples.psam`; the script picks up whatever is already there.
+
 ## Stages
 
 `run.sh` runs stages 0, 1 and 2 in order (2 triggers 3–5 itself); the
-stages exist separately so any one can be rerun alone.
+stages exist separately so any one can be rerun alone. The preamble sits
+before all of them and runs once.
 
 | Stage | Script | What it does |
 |---|---|---|
@@ -186,7 +256,10 @@ the pipeline output.
   miss. (It is also a live argument for the score/external-engine path on
   saturated binary traits.)
 - **`null_lambda` / `null_frac_p05` (WARN)** — the permuted phenotype must
-  stay calibrated (λ band 0.85–1.20 on real data).
+  stay calibrated (λ band 0.85–1.20 on real data), judged on autosomal
+  bins: every chrX/Y bin carries the same sex vector, so those tests are one
+  dependent draw, not thousands of independent ones. The all-bin λ is
+  reported as INFO.
 - **`regions_unique` (FAIL)** — no bin tested twice: the windowed region
   list must partition the matrix.
 - **`all_units_reported` (WARN)** — one output shard per work unit per
@@ -247,7 +320,11 @@ that matter most:
 | `EX_SEED_CONTROL_SEED` / `EX_NGSPCA_DIR_SEEDCTL` | 43 / `$NGSPCA_WORK_DIR/ngspca_output_seed43` | the seed-control PCA run (NGS-PCA step 2b) |
 | `EX_MEDIAN_SOURCE` | `auto` | `auto` prefers NGS-PCA's `autosomal.median.txt`, `qc` uses `HQ_MEDIAN_COV`, `ngspca` insists on the table |
 | `EX_CALIBRATION_FACTOR` | 1.5 | fast distance ≤ this × seed distance counts as "within seed noise" |
-| `EX_NDIM` | 20 | PCs removed by the correction; sweep it against the per-region stats the correct stage writes |
+| `EX_NDIM` | `preamble/ndim.txt`, else 20 | PCs removed by the correction; the preamble's MP count when it ran, an explicit value always wins |
+| `EX_MP_MARGIN` | 0.01 | relative margin above the MP edge for the PC counts (coverage and genotype) |
+| `EX_N_GPCS` / `EX_COVARIATES` | 10 / `SEX+GPC1..GPC10` when covariates exist, else `none` | covariate terms of the adjusted models |
+| `EX_GENO_CHROMS` | 1–22 (22 only in smoke) | chromosomes the genotype PCA uses |
+| `EX_PREAMBLE_MODULES` | `plink2` | modules loaded before plink2, where `module` exists |
 | `EX_WINDOW` | 25000000 | work-unit size in bp (~140 units over chr1–22,X,Y,M); 0 = per contig |
 | `EX_CONTIG_REGEX` | primary + chrM | which contigs get corrected/analysed (the matrix keeps everything) |
 | `EX_MIN_OBS` | 100 | per-region completeness floor at the analysis stage |
@@ -314,3 +391,6 @@ the driver; you should not need to set it yourself here.
 | prepare stops: `MTDNA_CN is NA for every sample` | same cause, one step worse — no `HQ_MEDIAN_COV` at all; the phenotype does not exist until `03a`/`03` are rerun after `02` |
 | `SKIP seedctl` | no seed-control PCA run yet; produce it with NGS-PCA's step 2b, then rerun `00` → `02` (only `seedctl` will run; the standard matrix is reused) |
 | `seedctl shares the standard matrix: run --mode standard first` | `--mode seedctl` alone needs a completed standard join; use `--mode all`, or run standard first |
+| preamble: `got an HTML page instead of a file` | Dropbox is blocked from that node; download the files listed in `resources/genotype_sources.tsv` elsewhere and place them under `preamble/genotypes/` |
+| preamble: `projection reproduces in-sample PCs with r^2 down to …` | the projected scores should be proportional to the in-sample PCs; a low r² on a deep PC is a near-degenerate eigenvalue pair, harmless if it is beyond `EX_N_GPCS` |
+| `ndim.txt not written` | the reported spectrum never reached the noise bulk; raise `NUM_PC` upstream or set `EX_NDIM` |

@@ -55,13 +55,24 @@ for mode in $EX_MODES; do
     # --- tables ------------------------------------------------------------
     median_opt=()
     [ -z "$EX_M_MEDIAN_TABLE" ] || median_opt=(--median "$EX_M_MEDIAN_TABLE")
+    cov_opt=()
+    [ ! -s "$EX_PREAMBLE_DIR/covariates.tsv" ] || cov_opt=(--covariates "$EX_PREAMBLE_DIR/covariates.tsv")
     Rscript "$EX_EXAMPLE_DIR/R/prepare_inputs.R" \
         --qc "$EX_M_QC_TABLE" --pcs "$EX_M_PCS_FILE" \
-        ${median_opt[@]+"${median_opt[@]}"} \
+        ${median_opt[@]+"${median_opt[@]}"} ${cov_opt[@]+"${cov_opt[@]}"} \
         --suffix "$EX_SAMPLE_SUFFIX" --seed "$EX_PHENO_SEED" \
         --out "$in_dir" 2>&1 | tee "$in_dir/prepare.summary.txt" >&2
 
     # --- phenotype manifest -------------------------------------------------
+    # With covariates (preamble.sh ran): the unadjusted MTDNA_CN run stays as
+    # the pure truth check and the adjusted runs are the science models.
+    # The sex analyses take the covariates without SEX itself.
+    adj=""; adj_nosex=""
+    if [ "$EX_COVARIATES" != "none" ] && [ -n "$EX_COVARIATES" ]; then
+        adj="+$EX_COVARIATES"
+        adj_nosex="$(printf '%s' "+$EX_COVARIATES" | sed -e 's/+SEX+/+/g' -e 's/+SEX$//')"
+        [ "$adj_nosex" = "+" ] && adj_nosex=""
+    fi
     {
         printf '# depthSV 1000G example analyses. Format: name<TAB>method<TAB>model\n'
         printf '# The depth term must be named cov_resids (see conf/phenotypes.example.tsv).\n'
@@ -70,12 +81,23 @@ for mode in $EX_MODES; do
         printf '# sex separates depth on chrX/Y so completely that the logistic Wald z\n'
         printf '# collapses there (Hauck-Donner), so the logistic run exercises that\n'
         printf '# engine and documents the collapse rather than asserting rank.\n'
-        printf 'mtdna_cn\tlinear\tMTDNA_CN~cov_resids\n'
-        printf 'log2_mtdna_cn\tlinear\tLOG2_MTDNA_CN~cov_resids\n'
-        printf 'mtdna_cn_null\tlinear\tMTDNA_CN_NULL~cov_resids\n'
-        printf 'sex_linear\tlinear\tSEX~cov_resids\n'
-        printf 'inferred_sex\tlogistic\tSEX~cov_resids\n'
+        if [ -n "$adj" ]; then
+            printf '# Covariates from the preamble: %s (EX_COVARIATES).\n' "$EX_COVARIATES"
+            printf 'mtdna_cn\tlinear\tMTDNA_CN~cov_resids\n'
+            printf 'mtdna_cn_adj\tlinear\tMTDNA_CN~cov_resids%s\n' "$adj"
+            printf 'log2_mtdna_cn_adj\tlinear\tLOG2_MTDNA_CN~cov_resids%s\n' "$adj"
+            printf 'mtdna_cn_null_adj\tlinear\tMTDNA_CN_NULL~cov_resids%s\n' "$adj"
+            printf 'sex_linear\tlinear\tSEX~cov_resids%s\n' "$adj_nosex"
+            printf 'inferred_sex\tlogistic\tSEX~cov_resids\n'
+        else
+            printf 'mtdna_cn\tlinear\tMTDNA_CN~cov_resids\n'
+            printf 'log2_mtdna_cn\tlinear\tLOG2_MTDNA_CN~cov_resids\n'
+            printf 'mtdna_cn_null\tlinear\tMTDNA_CN_NULL~cov_resids\n'
+            printf 'sex_linear\tlinear\tSEX~cov_resids\n'
+            printf 'inferred_sex\tlogistic\tSEX~cov_resids\n'
+        fi
     } > "$in_dir/analyses.tsv"
+    dsv_log "$mode: analyses -> $(grep -vc '^#' "$in_dir/analyses.tsv") models (covariates: $EX_COVARIATES; ndim $EX_NDIM)"
 
     # --- mosdepth manifest --------------------------------------------------
     manifest="$in_dir/mosdepth.manifest.txt"

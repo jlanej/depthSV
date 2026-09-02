@@ -87,11 +87,64 @@ EX_SMOKE="${EX_SMOKE:-0}"
 EX_SMOKE_SAMPLES="${EX_SMOKE_SAMPLES:-64}"
 EX_SMOKE_SEED="${EX_SMOKE_SEED:-20260818}"
 
+# --- preamble (preamble.sh): ndim and covariates ---------------------------
+
+EX_PREAMBLE_DIR="${EX_PREAMBLE_DIR:-${EX_WORK_DIR}/preamble}"
+
+# Marchenko-Pastur cut for the coverage PCs: relative margin above the noise
+# edge (1% is about four Tracy-Widom sd at 3,202 x 142,070), and the ranks
+# skipped between the signal estimate and the noise fit.
+EX_MP_MARGIN="${EX_MP_MARGIN:-0.01}"
+EX_MP_GAP="${EX_MP_GAP:-20}"
+
+# Genotype PCs from the published PLINK-format NYGC callset.
+EX_GENO_SOURCES="${EX_GENO_SOURCES:-${EX_EXAMPLE_DIR}/resources/genotype_sources.tsv}"
+EX_GENO_LD_REGIONS="${EX_GENO_LD_REGIONS:-${EX_EXAMPLE_DIR}/resources/long_range_ld_grch38.txt}"
+if [ "${EX_SMOKE}" = "1" ]; then
+    EX_GENO_CHROMS="${EX_GENO_CHROMS:-22}"                  # one chromosome: minutes, ~60 MB
+else
+    EX_GENO_CHROMS="${EX_GENO_CHROMS:-1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22}"
+fi
+EX_GENO_MAF="${EX_GENO_MAF:-0.05}"
+EX_GENO_GENO="${EX_GENO_GENO:-0.01}"
+EX_GENO_LD_WINDOW="${EX_GENO_LD_WINDOW:-1000kb}"
+EX_GENO_LD_R2="${EX_GENO_LD_R2:-0.1}"
+EX_GENO_KING_CUTOFF="${EX_GENO_KING_CUTOFF:-0.0884}"      # removes 2nd-degree and closer
+EX_GENO_NPC="${EX_GENO_NPC:-40}"                            # computed, so the MP tail is visible
+EX_N_GPCS="${EX_N_GPCS:-10}"                                # used in the models
+EX_GENO_THREADS="${EX_GENO_THREADS:-${SLURM_CPUS_PER_TASK:-8}}"
+if [ -z "${EX_GENO_MEMORY_MB:-}" ]; then
+    if [ -n "${SLURM_MEM_PER_NODE:-}" ]; then
+        EX_GENO_MEMORY_MB=$(( SLURM_MEM_PER_NODE * 85 / 100 ))
+    else
+        EX_GENO_MEMORY_MB=16000
+    fi
+fi
+# Environment modules to load before plink2, if the host provides `module`.
+EX_PREAMBLE_MODULES="${EX_PREAMBLE_MODULES:-plink2}"
+
+# Covariate terms appended to the mtDNA-CN models (SEX is dropped from the
+# sex analyses automatically). Defaults to SEX plus the first EX_N_GPCS
+# genotype PCs once the preamble has produced covariates.tsv; set to "none"
+# for unadjusted models, or to any '+'-joined list of phenotype columns.
+if [ -z "${EX_COVARIATES:-}" ]; then
+    if [ -s "${EX_PREAMBLE_DIR}/covariates.tsv" ]; then
+        EX_COVARIATES="SEX"
+        i=1
+        while [ "$i" -le "$EX_N_GPCS" ]; do EX_COVARIATES="${EX_COVARIATES}+GPC${i}"; i=$((i + 1)); done
+        unset i
+    else
+        EX_COVARIATES="none"
+    fi
+fi
+
 # --- pipeline parameters ---------------------------------------------------
 
 # PCs removed by the correction stage. The upstream run computes 200; how
-# many to remove is an empirical choice (see the per-region stats the
-# correct stage writes). 20 is a starting point, not a recommendation.
+# many to remove is the preamble's Marchenko-Pastur decision when it has
+# run (preamble/ndim.txt, averaged over modes so every tree is corrected
+# identically); 20 otherwise, as a starting point rather than a
+# recommendation. EX_NDIM in the environment overrides both.
 #
 # Smoke runs default lower: across a 64-sample subset the real leading PCs
 # explain a large share of MTDNA_CN itself (measured R^2 ~ 0.67 at ndim=20,
@@ -99,10 +152,14 @@ EX_SMOKE_SEED="${EX_SMOKE_SEED:-20260818}"
 # signal the checks assert on. The same absorption exists at full scale —
 # that is what makes the ndim choice measurable — but there it dilutes over
 # 3,202 samples instead of overwhelming the test.
-if [ "${EX_SMOKE}" = "1" ]; then
-    EX_NDIM="${EX_NDIM:-4}"
-else
-    EX_NDIM="${EX_NDIM:-20}"
+if [ -z "${EX_NDIM:-}" ]; then
+    if [ "${EX_SMOKE}" = "1" ]; then
+        EX_NDIM=4
+    elif [ -s "${EX_PREAMBLE_DIR}/ndim.txt" ]; then
+        EX_NDIM="$(tr -cd '0-9' < "${EX_PREAMBLE_DIR}/ndim.txt")"
+    else
+        EX_NDIM=20
+    fi
 fi
 
 # Work-unit size for the SLURM array / local loop, in bp. 0 = one unit per

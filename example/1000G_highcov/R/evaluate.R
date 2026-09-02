@@ -119,7 +119,11 @@ for (i in seq_len(nrow(manifest))) {
   d[, abs_stat := abs(STAT)]
   top <- d[order(-abs_stat)]
 
-  if (nm %in% c("mtdna_cn", "log2_mtdna_cn")) {
+  # Checks key on the analysis family: the covariate-adjusted variants
+  # (preamble.sh ran) carry the same truth as their unadjusted namesakes.
+  fam <- sub("_adj$", "", nm)
+
+  if (fam %in% c("mtdna_cn", "log2_mtdna_cn")) {
     n_m <- sum(d$class == "chrM")
     add(nm, "chrM_bins_tested", if (n_m >= 10) "PASS" else "WARN", n_m,
         "17 x 1 kb chrM bins exist; fewer tested means QC dropped some")
@@ -134,7 +138,7 @@ for (i in seq_len(nrow(manifest))) {
       frac_sig <- mean(d[class == "chrM"]$P < 1e-6)
       add(nm, "chrM_bins_significant", if (frac_sig >= 0.8) "PASS" else "WARN",
           sprintf("%.0f%% at p<1e-6", 100 * frac_sig))
-      if (nm == "log2_mtdna_cn") {
+      if (fam == "log2_mtdna_cn") {
         best <- d[class == "chrM"][which.max(abs_stat)]
         slope_ok <- best$Estimate > 0.5 && best$Estimate < 1.5
         add(nm, "chrM_log2_slope", if (slope_ok) "PASS" else "WARN",
@@ -152,7 +156,7 @@ for (i in seq_len(nrow(manifest))) {
            file.path(opt$out, sprintf("top_hits.%s.tsv", nm)), sep = "\t")
   }
 
-  if (nm == "sex_linear") {
+  if (fam == "sex_linear") {
     n_sex <- sum(d$class == "sex")
     if (n_sex == 0) {
       add(nm, "sex_top_hit", "FAIL", "no chrX/chrY bins tested", "")
@@ -169,7 +173,7 @@ for (i in seq_len(nrow(manifest))) {
            file.path(opt$out, "top_hits.sex_linear.tsv"), sep = "\t")
   }
 
-  if (nm == "inferred_sex") {
+  if (fam == "inferred_sex") {
     # Engine coverage, not a rank assertion: sex separates the corrected
     # depth on chrX/Y completely, and under complete separation the
     # logistic Wald z COLLAPSES (Hauck-Donner) — the strongest real effects
@@ -192,17 +196,27 @@ for (i in seq_len(nrow(manifest))) {
            file.path(opt$out, "top_hits.inferred_sex.tsv"), sep = "\t")
   }
 
-  if (nm == "mtdna_cn_null") {
-    lam <- lambda_gc(d$P)
+  if (fam == "mtdna_cn_null") {
+    # Calibration is judged on the autosomes. Sex-chromosome bins all carry
+    # the same sex vector, so their tests are one dependent draw rather
+    # than thousands of independent ones — a majority of the bins in the
+    # smoke slice, a few percent at genome scale, and misleading either way.
+    dn <- d[class == "autosome"]
+    scope <- "autosomal"
+    if (nrow(dn) < 50) { dn <- d; scope <- "all" }
+    lam <- lambda_gc(dn$P)
     band <- if (smoke) c(0.6, 1.6) else c(0.85, 1.20)
     add(nm, "null_lambda", if (!is.na(lam) && lam >= band[1] && lam <= band[2]) "PASS" else "WARN",
-        sprintf("%.3f", lam), sprintf("acceptance band %.2f-%.2f (%s profile)", band[1], band[2], opt$profile))
-    frac05 <- mean(d$P < 0.05)
+        sprintf("%.3f (%s bins)", lam, scope),
+        sprintf("acceptance band %.2f-%.2f (%s profile)", band[1], band[2], opt$profile))
+    frac05 <- mean(dn$P < 0.05)
     # The smoke band reaches lower: removing ndim real-PC dimensions from 64
     # samples deflates the residual variance the test never learns about.
     fb <- if (smoke) c(0.015, 0.10) else c(0.03, 0.07)
     add(nm, "null_frac_p05", if (frac05 >= fb[1] && frac05 <= fb[2]) "PASS" else "WARN",
-        sprintf("%.3f", frac05), "fraction of regions at p<0.05; ~0.05 when calibrated")
+        sprintf("%.3f (%s bins)", frac05, scope), "fraction of regions at p<0.05; ~0.05 when calibrated")
+    add(nm, "null_lambda_all_bins", "INFO", sprintf("%.3f", lambda_gc(d$P)),
+        "includes chrX/Y/M; moves with a single sex draw in small cohorts")
     add(nm, "null_min_p", "INFO", sprintf("%.2g over %d regions", min(d$P), nrow(d)))
   }
 }
