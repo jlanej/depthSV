@@ -1,0 +1,6 @@
+n=3202 p=12 prev=0.50 bins=200  glm.fit 2.8 ms/bin (mean iter 3.0)  | score: null 0.00 s once, 0.015 ms/bin  -> 189x
+n=3202 p=12 prev=0.02 bins=200  glm.fit 5.3 ms/bin (mean iter 7.0)  | score: null 0.00 s once, 0.015 ms/bin  -> 352x
+n=3202  logistf (Firth, no profile CI) 11 ms/bin
+n=3202 p=2 prev=0.50 bins=200  glm.fit 1.6 ms/bin (mean iter 3.0)  | score: null 0.00 s once, 0.015 ms/bin  -> 105x
+n=3202 p=2 prev=0.02 bins=200  glm.fit 2.3 ms/bin (mean iter 6.0)  | score: null 0.00 s once, 0.010 ms/bin  -> 229x
+n=3202  logistf (Firth, no profile CI) 3 ms/bin

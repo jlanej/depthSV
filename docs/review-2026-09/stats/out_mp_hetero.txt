@@ -1,0 +1,23 @@
+n=800, p=35495 (gamma=0.0225). TRUE number of non-noise components is stated per row.
+iid noise (0 true components)                              MP count @0/1/2/5%:   0   0   0   0 | PA (column-permutation) count:   0 
+per-sample sd from real coverage 27-70x (0 true)           MP count @0/1/2/5%:   3   0   0   0 | PA (column-permutation) count:  15 
+per-bin lognormal sd (sdlog=0.25) (0 true)                 MP count @0/1/2/5%:   8   0   0   0 | PA (column-permutation) count:   2 
+per-bin sdlog=0.25 AND per-sample coverage (0 true)        MP count @0/1/2/5%:  12   3   0   0 | PA (column-permutation) count:  12 
+per-bin lognormal sd (sdlog=0.50) (0 true)                 MP count @0/1/2/5%:  49  39  30  11 | PA (column-permutation) count:   1 
+per-bin sdlog=0.50 AND per-sample coverage (0 true)        MP count @0/1/2/5%:  52  41  31  12 | PA (column-permutation) count:   1 
+
+30 technical factors (sv 4x..1.3x the iid edge) + 12 CNV blocks + heteroskedastic noise:
+   MP count @0/1/2/5%: 66 58 50 38 ; PA count: 30 ; (30 technical + 12 CNVs = 42 real components)
+   CNV blocks and the sample-side PC that carries each (max r^2 with the genotype):
+     AF0.05 x 3 bins    -> PC13  r^2=0.01 REMOVED at the 1% MP count
+     AF0.10 x 3 bins    -> PC50  r^2=0.01 REMOVED at the 1% MP count
+     AF0.20 x 3 bins    -> PC55  r^2=0.01 REMOVED at the 1% MP count
+     AF0.30 x 3 bins    -> PC44  r^2=0.01 REMOVED at the 1% MP count
+     AF0.05 x 10 bins   -> PC3   r^2=0.01 REMOVED at the 1% MP count
+     AF0.10 x 10 bins   -> PC51  r^2=0.02 REMOVED at the 1% MP count
+     AF0.20 x 10 bins   -> PC39  r^2=0.13 REMOVED at the 1% MP count
+     AF0.30 x 10 bins   -> PC34  r^2=0.32 REMOVED at the 1% MP count
+     AF0.05 x 30 bins   -> PC49  r^2=0.02 REMOVED at the 1% MP count
+     AF0.10 x 30 bins   -> PC53  r^2=0.03 REMOVED at the 1% MP count
+     AF0.20 x 30 bins   -> PC32  r^2=0.67 REMOVED at the 1% MP count
+     AF0.30 x 30 bins   -> PC25  r^2=0.34 REMOVED at the 1% MP count

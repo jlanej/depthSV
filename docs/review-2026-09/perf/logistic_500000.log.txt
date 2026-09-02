@@ -1,0 +1,2 @@
+n=500000 p=12 prev=0.50 bins=3  glm.fit 502.7 ms/bin (mean iter 3.0)  | score: null 0.50 s once, 9.000 ms/bin  -> 56x
+n=500000 p=12 prev=0.02 bins=3  glm.fit 909.3 ms/bin (mean iter 6.0)  | score: null 0.81 s once, 7.333 ms/bin  -> 124x

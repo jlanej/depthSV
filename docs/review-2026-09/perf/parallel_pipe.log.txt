@@ -1,0 +1,33 @@
+stream: 400 rows, 1199995640 bytes (2999989 B/row)
+dsv_chunk_lines would give: 22
+--- lines per job with --block 64M -L 22 -j4 (worker: wc -l):
+      22       22       22       22       22       22       22       22       22       22       22       22       22       22       22       22       22       22        4 
+--- lines per job with -L 2000 (the 3,202-width default cap) on the same stream:
+parallel: Warning: A record was longer than 67108864. Increasing to --blocksize 87241525.
+parallel: Warning: A record was longer than 87241525. Increasing to --blocksize 113413984.
+parallel: Warning: A record was longer than 113413984. Increasing to --blocksize 147438181.
+parallel: Warning: A record was longer than 147438181. Increasing to --blocksize 191669637.
+parallel: Warning: A record was longer than 191669637. Increasing to --blocksize 249170530.
+parallel: Warning: A record was longer than 249170530. Increasing to --blocksize 323921690.
+parallel: Warning: A record was longer than 323921690. Increasing to --blocksize 421098198.
+parallel: Warning: A record was longer than 421098198. Increasing to --blocksize 547427659.
+parallel: Warning: A record was longer than 547427659. Increasing to --blocksize 711655958.
+parallel: Warning: A record was longer than 711655958. Increasing to --blocksize 925152747.
+parallel: Warning: A record was longer than 925152747. Increasing to --blocksize 1202698573.
+     400 
+--- baseline cat > /dev/null:
+real 0.08 user 0.00 sys 0.08 
+--- through parallel --pipe -k (cat worker), -j4:
+real 1.71 user 1.00 sys 2.07 
+--- through parallel --pipe WITHOUT -k (cat worker), -j4:
+real 1.72 user 1.00 sys 2.06 
+--- through parallel --pipe -k --block 512M:
+real 1.59 user 0.86 sys 1.75 
+--- bgzip -dc throughput on the same bytes (single thread) and tabix on an indexed copy:
+-rw-r--r--@ 1 Kitty  wheel  427977145 Sep  2 12:11 stream_500k.bgz
+-rw-r--r--@ 1 Kitty  wheel        598 Sep  2 12:11 stream_500k.bgz.tbi
+real 1.80 user 1.73 sys 0.06  (bgzip -dc, 1 thread)
+real 0.47 user 1.85 sys 0.23  (bgzip -dc, 4 threads)
+real 3.21 user 3.13 sys 0.06  (tabix whole contig)
+ 2999957 real 0.06 user 0.05 sys 0.00  (tabix one bin from the middle)
+      20 real 0.27 user 0.26 sys 0.02  (tabix 20 bins)

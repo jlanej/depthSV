@@ -1,0 +1,76 @@
+=== prologue N=3202 ndim=40
+library(optparse,data.table)   0.043 s wall   0.042 s cpu
+fread coverage                 0.005 s wall   0.005 s cpu
+fread PCs (all columns)        0.006 s wall   0.006 s cpu
+merge                          0.004 s wall   0.004 s cpu
+read+split header              0.000 s wall   0.000 s cpu
+match samples                  0.001 s wall   0.000 s cpu
+build X                        0.001 s wall   0.000 s cpu
+qr(X)                          0.002 s wall   0.003 s cpu
+qr.Q + truncate                0.002 s wall   0.002 s cpu
+TOTAL prologue 0.078 s wall, n=3202 ndim=40, maxRSS 106 MB
+=== prologue N=50000 ndim=40
+library(optparse,data.table)   0.040 s wall   0.040 s cpu
+fread coverage                 0.014 s wall   0.012 s cpu
+fread PCs (all columns)        0.070 s wall   0.070 s cpu
+merge                          0.022 s wall   0.022 s cpu
+read+split header              0.005 s wall   0.004 s cpu
+match samples                  0.001 s wall   0.001 s cpu
+build X                        0.045 s wall   0.044 s cpu
+qr(X)                          0.046 s wall   0.046 s cpu
+qr.Q + truncate                0.072 s wall   0.072 s cpu
+TOTAL prologue 0.333 s wall, n=50000 ndim=40, maxRSS 302 MB
+=== prologue N=200000 ndim=40
+library(optparse,data.table)   0.040 s wall   0.041 s cpu
+fread coverage                 0.025 s wall   0.026 s cpu
+fread PCs (all columns)        0.330 s wall   0.303 s cpu
+merge                          0.187 s wall   0.161 s cpu
+read+split header              0.021 s wall   0.020 s cpu
+match samples                  0.023 s wall   0.024 s cpu
+build X                        0.073 s wall   0.067 s cpu
+qr(X)                          0.147 s wall   0.147 s cpu
+qr.Q + truncate                0.234 s wall   0.221 s cpu
+TOTAL prologue 1.108 s wall, n=200000 ndim=40, maxRSS 1013 MB
+=== prologue N=500000 ndim=40
+library(optparse,data.table)   0.040 s wall   0.041 s cpu
+fread coverage                 0.105 s wall   0.101 s cpu
+fread PCs (all columns)        0.737 s wall   0.708 s cpu
+merge                          0.394 s wall   0.360 s cpu
+read+split header              0.055 s wall   0.050 s cpu
+match samples                  0.060 s wall   0.055 s cpu
+build X                        0.157 s wall   0.141 s cpu
+qr(X)                          0.436 s wall   0.366 s cpu
+qr.Q + truncate                0.595 s wall   0.526 s cpu
+TOTAL prologue 2.627 s wall, n=500000 ndim=40, maxRSS 2354 MB
+=== per-row N=3202 ndim=40
+N=3202 rows=40 ndim=40  per-row ms: split 0.3  as.numeric 0.2  log2 0.1  resid 0.1  sprintf 1.1  paste+cat 0.3  TOTAL 2.0
+Error in array(STATS, dims[perm]) : 'dims' cannot be of length 0
+Calls: sweep -> aperm -> array
+In addition: Warning message:
+In sweep(pmax(0.005, D), 2, med, `/`) :
+  STATS is longer than the extent of 'dim(x)[MARGIN]'
+Execution halted
+=== per-row N=50000 ndim=40
+N=50000 rows=40 ndim=40  per-row ms: split 2.9  as.numeric 4.1  log2 0.4  resid 2.4  sprintf 28.7  paste+cat 7.9  TOTAL 46.3
+Error in array(STATS, dims[perm]) : 'dims' cannot be of length 0
+Calls: sweep -> aperm -> array
+In addition: Warning message:
+In sweep(pmax(0.005, D), 2, med, `/`) :
+  STATS is longer than the extent of 'dim(x)[MARGIN]'
+Execution halted
+=== per-row N=200000 ndim=40
+N=200000 rows=40 ndim=40  per-row ms: split 14.0  as.numeric 14.8  log2 2.1  resid 11.0  sprintf 160.4  paste+cat 45.6  TOTAL 247.8
+Error in array(STATS, dims[perm]) : 'dims' cannot be of length 0
+Calls: sweep -> aperm -> array
+In addition: Warning message:
+In sweep(pmax(0.005, D), 2, med, `/`) :
+  STATS is longer than the extent of 'dim(x)[MARGIN]'
+Execution halted
+=== per-row N=500000 ndim=40
+N=500000 rows=40 ndim=40  per-row ms: split 33.4  as.numeric 42.6  log2 6.7  resid 29.7  sprintf 396.9  paste+cat 231.7  TOTAL 741.0
+Error in array(STATS, dims[perm]) : 'dims' cannot be of length 0
+Calls: sweep -> aperm -> array
+In addition: Warning message:
+In sweep(pmax(0.005, D), 2, med, `/`) :
+  STATS is longer than the extent of 'dim(x)[MARGIN]'
+Execution halted

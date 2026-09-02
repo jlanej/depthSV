@@ -1,0 +1,4 @@
+n=3202 m=2000 p=12  loop 0.24 s (0.12 ms/bin)  block 0.06 s (0.028 ms/bin)  speedup 4.3x  max|diff| beta 2.2e-16 t 2.7e-15
+parse 2000 x 3202 (63 MB text): character+as.numeric 2.80 s   numeric fread 0.91 s   (3.1x)
+n=3202 m=2000 p=2  loop 0.18 s (0.09 ms/bin)  block 0.05 s (0.026 ms/bin)  speedup 3.4x  max|diff| beta 2.0e-16 t 2.7e-15
+parse 2000 x 3202 (63 MB text): character+as.numeric 3.09 s   numeric fread 0.99 s   (3.1x)

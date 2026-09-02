@@ -1,0 +1,25 @@
+join exit 0
+      232.22 real       445.05 user        93.36 sys
+            23642112  maximum resident set size
+/private/tmp/claude-501/-Users-Kitty-git-depthSV/1db72424-c4a1-45f4-b81e-5b466f3ec8a4/scratchpad/review_perf/join_3202.sh: line 15: 86787 Terminated: 15          ( while true; do
+    du -sk g3202/join 2> /dev/null | awk -v t="$(date +%s)" '{print t"\t"$1}'; sleep 2;
+done ) > g3202/join_du.log
+[2026-09-02T17:24:49Z] joining 3202 samples into /private/tmp/claude-501/-Users-Kitty-git-depthSV/1db72424-c4a1-45f4-b81e-5b466f3ec8a4/scratchpad/review_perf/g3202/join (57 batches of <=57, 8 extraction jobs)
+[2026-09-02T17:24:50Z] batch 000001/57 extracted (samples 1-57 of 3202)
+[2026-09-02T17:25:06Z] batch 000010/57 extracted (samples 514-570 of 3202)
+[2026-09-02T17:25:23Z] batch 000020/57 extracted (samples 1084-1140 of 3202)
+[2026-09-02T17:25:41Z] batch 000030/57 extracted (samples 1654-1710 of 3202)
+[2026-09-02T17:26:00Z] batch 000040/57 extracted (samples 2224-2280 of 3202)
+[2026-09-02T17:26:17Z] batch 000050/57 extracted (samples 2794-2850 of 3202)
+[2026-09-02T17:26:28Z] batch 000057/57 extracted (samples 3193-3202 of 3202)
+[2026-09-02T17:28:36Z] row parity ok: 100000 rows
+[2026-09-02T17:28:41Z] wrote /private/tmp/claude-501/-Users-Kitty-git-depthSV/1db72424-c4a1-45f4-b81e-5b466f3ec8a4/scratchpad/review_perf/g3202/join/depth.matrix.txt.gz
+[2026-09-02T17:28:41Z] manifest: /private/tmp/claude-501/-Users-Kitty-git-depthSV/1db72424-c4a1-45f4-b81e-5b466f3ec8a4/scratchpad/review_perf/g3202/join/depth.matrix.manifest
+total 1346728
+drwxr-xr-x@ 6 Kitty  wheel        192 Sep  2 12:28 .
+drwxr-xr-x@ 8 Kitty  wheel        256 Sep  2 12:24 ..
+-rw-r--r--@ 1 Kitty  wheel     541270 Sep  2 12:28 depth.matrix.manifest
+-rw-r--r--@ 1 Kitty  wheel  684519604 Sep  2 12:27 depth.matrix.txt.gz
+-rw-r--r--@ 1 Kitty  wheel          5 Sep  2 12:28 depth.matrix.txt.gz.done
+-rw-r--r--@ 1 Kitty  wheel     146569 Sep  2 12:28 depth.matrix.txt.gz.tbi
+peak scratch KB: 1788370121	1460240

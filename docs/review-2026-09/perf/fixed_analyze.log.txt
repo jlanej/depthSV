@@ -1,0 +1,12 @@
+real 3202                linear    rows=1   wall   0.19s  cpu   0.38s  maxRSS     92 MB  outrows 0 Error: no matrix sample matched the phenotype table; check --sampleIdPattern
+real 3202                logistic  rows=1   wall   0.18s  cpu   0.36s  maxRSS     92 MB  outrows 0 Error: no matrix sample matched the phenotype table; check --sampleIdPattern
+synthetic 3202           linear    rows=1   wall   0.21s  cpu   0.42s  maxRSS     96 MB  outrows 2 
+synthetic 3202           logistic  rows=1   wall   0.24s  cpu   0.48s  maxRSS     96 MB  outrows 2 
+synthetic 50000          linear    rows=1   wall   0.49s  cpu   0.98s  maxRSS    233 MB  outrows 2 
+synthetic 50000          logistic  rows=1   wall   0.49s  cpu   0.98s  maxRSS    242 MB  outrows 2 
+synthetic 200000         linear    rows=1   wall   1.14s  cpu   2.28s  maxRSS    572 MB  outrows 2 
+synthetic 200000         logistic  rows=1   wall   1.65s  cpu   3.30s  maxRSS    628 MB  outrows 2 
+synthetic 500000         linear    rows=1   wall   2.98s  cpu   5.96s  maxRSS   1244 MB  outrows 2 
+synthetic 500000         logistic  rows=1   wall   3.56s  cpu   7.12s  maxRSS   1295 MB  outrows 2 
+synthetic 500000         linear    rows=11  wall   7.51s  cpu  15.02s  maxRSS   1519 MB  outrows 12 
+synthetic 500000         logistic  rows=11  wall  17.70s  cpu  35.40s  maxRSS   2102 MB  outrows 12 

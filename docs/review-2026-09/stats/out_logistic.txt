@@ -1,0 +1,18 @@
+chrY-like bin (males log2 ~ N(-1.3, 0.1), females ~ N(-4.1, 0.5)), response = sex: complete separation
+     beta        se         z    p_wald     p_lrt converged      iter 
+  64.1175 5929.9924    0.0108    0.9914    0.0000    0.0000   25.0000 
+
+chrX-like bin (males ~ N(-1, 0.1), females ~ N(0, 0.1)): complete separation
+      beta         se          z     p_wald      p_lrt  converged       iter 
+ -121.6684 16719.8933    -0.0073     0.9942     0.0000     0.0000    25.0000 
+
+strong but non-separating effect: y ~ Bernoulli(logit = -2 + 2.5 x), x = deletion coding at AF 0.2 (het -1, hom floor -12)
+     beta        se         z    p_wald     p_lrt converged      iter 
+  -0.6168    0.0759   -8.1208    0.0000    0.0000    1.0000    7.0000 
+
+rare homozygous deletion: 3 carriers at the floor, all 3 cases (5% case rate); a Wald p near 1 for the strongest possible signal
+     beta        se         z    p_wald     p_lrt converged      iter 
+  -0.4770    0.2095   -2.2769    0.0228    0.0001    1.0000    5.0000 
+
+null check: 2000 null bins, 5% cases, one floored sample per bin: Wald vs LRT tail rates
+P(p<1e-4): Wald 0.0000  LRT 0.0000 ; P(p<0.05): Wald 0.025 LRT 0.071 ; Wald NA (analyze.R would skip the bin): 0 of 2000

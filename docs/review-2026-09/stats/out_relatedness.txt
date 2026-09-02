@@ -1,0 +1,14 @@
+n=3067 (2504 founders + 563 children); sum_{i!=j} K_ij^2 / n = 0.184 -> predicted lambda = 1 + 0.184 h2 at genetic bins
+
+h2     genetic bin lambda     technical bin lambda   P(p<1e-4) gen 
+0.00   1.019 (pred 1.000)     0.972                  0.00010 (nominal 1e-4)
+0.25   1.050 (pred 1.046)     1.006                  0.00015 (nominal 1e-4)
+0.50   1.090 (pred 1.092)     1.005                  0.00020 (nominal 1e-4)
+0.80   1.125 (pred 1.147)     1.004                  0.00050 (nominal 1e-4)
+1.00   1.197 (pred 1.184)     1.004                  0.00025 (nominal 1e-4)
+
+same at h2 = 0.5 but restricted to the 2504 founders (the KING-unrelated design):
+founders only: lambda = 1.016
+
+the example's permuted null (MTDNA_CN_NULL) is a permutation across samples: it destroys the family
+structure by construction; genetic-bin lambda under the permuted phenotype = 0.998 (h2 = 0.5 before permutation)

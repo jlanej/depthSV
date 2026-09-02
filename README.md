@@ -341,6 +341,16 @@ tests/smoke_test.sh          # full pipeline on synthetic data
 
 The suite asserts on results rather than exit codes, and needs no cohort data.
 
+## Acknowledgements
+
+The 1000 Genomes example (`example/1000G_highcov/`, including its preamble
+for choosing the number of coverage PCs and building genotype-PC covariates)
+and the repository's structural and scientific reviews were developed by
+[Claude](https://claude.ai) (Anthropic; Claude Fable 5) working with the
+maintainer in Claude Code. Those commits carry a `Co-Authored-By` trailer.
+The design decisions, and any mistakes, were reviewed and accepted by the
+maintainer.
+
 ## Licence
 
 MIT — see [LICENSE](LICENSE).

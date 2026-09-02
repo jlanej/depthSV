@@ -1,0 +1,14 @@
+zst-decompress pgen (53 MB zst): wall 0.23s  cpu 0.46s  maxRSS 15 MB
+  -> 133 MB pgen
+QC+prune pass, 2 threads: wall 0.41s  cpu 0.82s  maxRSS 177 MB
+QC+prune pass, 8 threads: wall 0.39s  cpu 0.78s  maxRSS 182 MB
+  --indep-pairwise 1000kb 1 0.1
+925730 out of 1066557 variants loaded from chr22.pvar.zst.
+101738 variants remaining after main filters.
+--indep-pairwise (2 compute threads): 99145/101738 variants removed.
+extract pass (2593 SNPs), 8 threads: wall 0.11s  cpu 0.22s  maxRSS 126 MB
+QC-only pass (no pruning), 8 threads, --make-pgen of the MAF/geno-filtered set: wall 0.55s  cpu 1.1s  maxRSS 264 MB
+  QC set: 101738 variants, 62 MB pgen
+prune on the QC set (in memory-sized pgen), 8 threads: wall 0.23s  cpu 0.46s  maxRSS 91 MB
+Warning : chr22.pvar.zst is a symbolic link, ignoring 
+variant-count scaling: chr22 = 0 variants; whole callset per genotype_sources.tsv is ~see README

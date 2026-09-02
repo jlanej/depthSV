@@ -180,7 +180,13 @@ the committed 3,202-sample spectrum the count is **52 at the exact edge and
 42 / 38 / 32 with a 1 / 2 / 5 % margin** — real coverage noise is not iid
 (per-bin variance differs), so the observed plateau decays a little faster
 than MP and the exact-edge count runs high. The default margin is 1 %
-(`EX_MP_MARGIN`, about four Tracy–Widom sd here); `ndim/ndim_by_mode.tsv`
+(`EX_MP_MARGIN`); that margin is far larger than the Tracy–Widom
+fluctuation of the noise edge at this size (Johnstone's scaling puts the
+edge's relative sd near 4 × 10⁻⁴, so 1 % is ~25 sd) — it absorbs the
+misfit between real, heteroskedastic coverage noise and the iid MP model,
+not sampling noise, and the count also depends on whether observed rank *j*
+is matched to noise rank *j* or *j − k* (42 vs 48 at 1 % here). Treat the
+1–2 % counts as a defensible range, not a number; `ndim/ndim_by_mode.tsv`
 carries all four counts and `ndim/ndim_mp.png` the fit, so the sensitivity
 is in the open rather than in a default.
 
@@ -325,7 +331,7 @@ that matter most:
 | `EX_N_GPCS` / `EX_COVARIATES` | 10 / `SEX+GPC1..GPC10` when covariates exist, else `none` | covariate terms of the adjusted models |
 | `EX_GENO_CHROMS` | 1–22 (22 only in smoke) | chromosomes the genotype PCA uses |
 | `EX_PREAMBLE_MODULES` | `plink2` | modules loaded before plink2, where `module` exists |
-| `EX_WINDOW` | 25000000 | work-unit size in bp (~140 units over chr1–22,X,Y,M); 0 = per contig |
+| `EX_WINDOW` | 10000000 | work-unit size in bp (~310 units over chr1–22,X,Y,M); 0 = per contig. Kept under 10 correction chunks per unit until the stats merge in `scripts/correct.sh` is sorted (see `REVIEW.md`) |
 | `EX_CONTIG_REGEX` | primary + chrM | which contigs get corrected/analysed (the matrix keeps everything) |
 | `EX_MIN_OBS` | 100 | per-region completeness floor at the analysis stage |
 | `EX_SBATCH_JOIN/UNIT/LIGHT` | see config | resources per job class |
@@ -363,11 +369,15 @@ the driver; you should not need to set it yourself here.
 - **The PC correction absorbs globally structured phenotypes — measurably.**
   mtDNA copy number loads on the leading depth PCs (it is one of NGS-PCA's
   own QC overlays); across a 64-sample subset the first 20 PCs explain
-  ~67% of log₂(MTDNA_CN) variance, and the `chrM_log2_slope` shrinks
-  accordingly. That is not a defect of the example, it is the ndim
-  trade-off made visible: sweep `EX_NDIM` (0 disables correction) and watch
-  the slope and the null λ move. This is exactly the evidence the
-  top-level README says the `--ndim` choice should rest on.
+  ~67% of log₂(MTDNA_CN) variance, and on the full 3,202 samples the first
+  42 explain ~58%. What the correction removes is *power*, not the effect
+  estimate: by Frisch–Waugh the chrM slope is invariant to ndim (it stays
+  near 1 at every setting), while the t-statistic falls as the PCs absorb
+  the depth variance (35 → 4 across ndim 0 → 40 in the smoke slice). That
+  is not a defect of the example, it is the ndim trade-off made visible:
+  sweep `EX_NDIM` (0 disables correction) and watch the chrM t-statistic
+  and the null λ, not the slope. This is exactly the evidence the top-level
+  README says the `--ndim` choice should rest on.
 - **Regenerating upstream results** is NGS-PCA's business; this example
   only reads its outputs. Keep one upstream mosdepth version per
   comparison (their timing records note it).
@@ -376,6 +386,14 @@ the driver; you should not need to set it yourself here.
   described in [`PLAN.md`](../../PLAN.md); this example gives that gate
   its real-data substrate (a known chrM signal at known strength) when it
   lands.
+
+## Credits
+
+This example, its preamble and its evaluation were developed by
+[Claude](https://claude.ai) (Anthropic; Claude Fable 5) with the maintainer
+in Claude Code; the upstream data and PCA come from the NGS-PCA project and
+the 1000 Genomes / NYGC 30x resource (Byrska-Bishop et al. 2022), and the
+genotype callset in PLINK 2 format from the PLINK 2.0 resources page.
 
 ## Troubleshooting
 
