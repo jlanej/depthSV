@@ -32,27 +32,33 @@ EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SO
 source "$EX_EXAMPLE_DIR/lib.sh"
 dsv_enable_error_trace
 
-mode="standard"; force=0
+mode="standard"; force=0; fetch_only=0
 while [ $# -gt 0 ]; do
     case "$1" in
-        --mode)    mode="$2"; shift 2 ;;
-        --force)   force=1; shift ;;
-        -h|--help) dsv_usage ;;
-        *)         dsv_die "unknown argument: $1" ;;
+        --mode)       mode="$2"; shift 2 ;;
+        --force)      force=1; shift ;;
+        --fetch-only) fetch_only=1; shift ;;   # download and reduce the callset, then stop
+        -h|--help)    dsv_usage ;;
+        *)            dsv_die "unknown argument: $1" ;;
     esac
 done
 [ "$mode" != all ] || mode=standard
 ex_check_mode "$mode"
 [ "$mode" != seedctl ] || dsv_die "the seed control shares the standard matrix; use --mode standard"
 
-dsv_require_cmd Rscript bgzip tabix parallel gzip awk
+# Modules first: on a cluster the tools may only exist after `module load`.
+dsv_load_modules
+dsv_require_cmd Rscript gzip awk
+[ "$fetch_only" -eq 1 ] || dsv_require_cmd bgzip tabix parallel
 ex_export_dsv_env "$mode"
-dsv_output_complete "$DSV_MATRIX" || dsv_die "$mode: no finished matrix at $DSV_MATRIX (run 02_run_depthsv.sh first)"
-in_dir="$(ex_inputs_dir "$mode")"
-[ -f "$in_dir/prepared.ok" ] || dsv_die "$mode: inputs are not marked ready; run 01_prepare_inputs.sh first"
-dsv_require_file "$in_dir/samples.txt"
 out="$(ex_sv_dir "$mode")"
-mkdir -p "$out"
+if [ "$fetch_only" -eq 0 ]; then
+    dsv_output_complete "$DSV_MATRIX" || dsv_die "$mode: no finished matrix at $DSV_MATRIX (run 02_run_depthsv.sh first)"
+    in_dir="$(ex_inputs_dir "$mode")"
+    [ -f "$in_dir/prepared.ok" ] || dsv_die "$mode: inputs are not marked ready; run 01_prepare_inputs.sh first"
+    dsv_require_file "$in_dir/samples.txt"
+    mkdir -p "$out"
+fi
 force_flag=()
 [ "$force" -eq 0 ] || force_flag=(--force)
 
@@ -110,6 +116,10 @@ else
         touch "$calls.done"
         dsv_log "$(( $(grep -c . "$calls") - 1 )) deletions -> $calls"
     fi
+fi
+if [ "$fetch_only" -eq 1 ]; then
+    dsv_log "--fetch-only: the deletions are ready at $calls; the recovery runs at the end of 02_run_depthsv.sh"
+    exit 0
 fi
 
 # --- which deletions, which ndims -------------------------------------------

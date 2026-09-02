@@ -265,7 +265,9 @@ EX_RUNNER="${EX_RUNNER:-auto}"
 # EX_SBATCH_EXTRA so the defaults stay portable.
 EX_SBATCH_JOIN="${EX_SBATCH_JOIN:---cpus-per-task=12 --mem=48G --time=12:00:00}"
 EX_SBATCH_UNIT="${EX_SBATCH_UNIT:---cpus-per-task=8 --mem=16G --time=4:00:00}"
-EX_SBATCH_LIGHT="${EX_SBATCH_LIGHT:---cpus-per-task=2 --mem=8G --time=2:00:00}"
+# The light class now carries the export of every analysis before the
+# evaluation (concatenating ~310 shards per analysis), hence the 4 h.
+EX_SBATCH_LIGHT="${EX_SBATCH_LIGHT:---cpus-per-task=2 --mem=8G --time=4:00:00}"
 EX_SBATCH_EXTRA="${EX_SBATCH_EXTRA:-}"
 EX_ARRAY_THROTTLE="${EX_ARRAY_THROTTLE:-100}"
 

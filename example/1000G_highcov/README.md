@@ -356,6 +356,11 @@ median AUC — the start of the plateau. It is informational: set `EX_NDIM`
 to adopt it. In smoke mode the deletions are twelve the simulated tree
 carries, so the stage is exercised without the download.
 
+The stage runs as its own job at the end of the chain. If compute nodes
+cannot reach the internet, fetch the callset from a login node first —
+`bash 06_sv_recovery.sh --fetch-only` downloads and reduces it into
+`sv_callset/` and stops — or set `EX_SV_RECOVERY=0`.
+
 ## Profiling
 
 Every stage invocation appends one record (mode, stage, unit, wall
@@ -488,3 +493,6 @@ genotype callset in PLINK 2 format from the PLINK 2.0 resources page.
 | preamble: `got an HTML page instead of a file` | Dropbox is blocked from that node; download the files listed in `resources/genotype_sources.tsv` elsewhere and place them under `preamble/genotypes/` |
 | preamble: `projection reproduces in-sample PCs with r^2 down to …` | the projected scores should be proportional to the in-sample PCs; a low r² on a deep PC is a near-degenerate eigenvalue pair, harmless if it is beyond `EX_N_GPCS` |
 | `ndim.txt not written` | the reported spectrum never reached the noise bulk; raise `NUM_PC` upstream or set `EX_NDIM` |
+| after upgrading depthSV every unit says `made with different inputs or parameters; redoing` | expected: finished work is keyed on the stage scripts' checksums, so a new pipeline version recomputes everything, the join included. Use a fresh `EX_WORK_DIR` (point `EX_PREAMBLE_DIR` at the old preamble to keep it) or let it recompute in place |
+| no `*_unrel` / `structured_null` rows in `analyses.tsv` | the preamble ran before the kinship outputs existed; `bash preamble.sh --genotypes-only` reuses the pruned genotypes and adds `unrelated.txt` and `kinship.king`, then rerun `01_prepare_inputs.sh` |
+| `dsvx-sv-recovery` job fails at the download | compute nodes without internet: `bash 06_sv_recovery.sh --fetch-only` from a login node, then resubmit; or `EX_SV_RECOVERY=0` |

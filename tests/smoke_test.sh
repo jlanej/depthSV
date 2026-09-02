@@ -311,10 +311,20 @@ if bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverag
 else
     ok "a 0/1 sex coding is refused as ambiguous"
 fi
+# A sample of unknown sex is allowed: it has no expected copies on chrX/chrY
+# (missing there), and everyone else is corrected as before.
+awk -F'\t' 'BEGIN{OFS="\t"} NR==1{for(i=1;i<=NF;i++) if($i=="sex") c=i; print; next} $1=="SAMPLE002"{$c=""} {print}' "$pheno" > "$work/sexna.tsv"
+bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverage "$cov" \
+    --region chrX --out "$work/sexna" --ndim 0 --jobs 2 --chunk 100 \
+    --sex "$work/sexna.tsv" --sex-col sex --par "$par" >"$work/sexna.log" 2>&1 \
+  || bad_log "correction with an unknown-sex sample failed" "$work/sexna.log"
 Rscript - "$work" "$pheno" <<'RS' > "$work/ploidy.txt" 2>&1
 suppressPackageStartupMessages(library(data.table))
 a <- commandArgs(trailingOnly = TRUE); work <- a[1]
 ph <- fread(a[2]); male <- ph$SAMPLE[ph$sex == "M"]; female <- ph$SAMPLE[ph$sex == "F"]
+sn <- fread(cmd = paste("gzip -cd", shQuote(file.path(work, "sexna", "corrected_ndim0.chrX.txt.gz"))))
+cat(sprintf("unknown_sex_missing_on_x=%s\n", all(is.na(sn[START >= 20000]$SAMPLE002)) && !anyNA(sn[START >= 20000]$SAMPLE003)))
+cat(sprintf("unknown_sex_diploid_in_par=%s\n", !anyNA(sn[START < 20000]$SAMPLE002)))
 rd <- function(f) fread(cmd = paste("gzip -cd", shQuote(f)))
 row <- function(d, start) { r <- d[START == start]; v <- as.numeric(r[, -(1:4)]); names(v) <- names(d)[-(1:4)]; v }
 xp <- rd(file.path(work, "ploidy", "corrected_ndim0.chrX.txt.gz"))
@@ -339,6 +349,8 @@ awk -v x="$(pget x_male_mean_noploidy)" 'BEGIN{exit !(x < -0.8)}' \
   || bad "  chrX without a sex table should show males at about -1 (got $(pget x_male_mean_noploidy))"
 near0 "$(pget par_male_mean_ploidy)" && ok "  the PAR stays diploid in males ($(pget par_male_mean_ploidy))" \
   || bad "  the PAR was treated as haploid in males ($(pget par_male_mean_ploidy))"
+check "  a sample of unknown sex is missing on non-PAR chrX, others are not" "$(pget unknown_sex_missing_on_x)" "TRUE"
+check "  and stays diploid in the PAR" "$(pget unknown_sex_diploid_in_par)" "TRUE"
 check "  chrY is missing in every female" "$(pget y_female_all_na)" "TRUE"
 check "  and present in every male"       "$(pget y_male_none_na)"  "TRUE"
 near0 "$(pget y_male_mean_ploidy)" && ok "  chrY is centred in males ($(pget y_male_mean_ploidy))" \

@@ -111,7 +111,9 @@ decode_sex <- function(x) {
   out <- rep(NA_character_, length(s))
   out[s %in% c("M", "MALE", "1")]   <- "M"
   out[s %in% c("F", "FEMALE", "2")] <- "F"
-  bad <- unique(s[is.na(out) & !s %in% c("", "NA")])
+  # An empty or NA code is an unknown sex: allowed, and such a sample has no
+  # expected copies on chrX/chrY (missing there, present elsewhere).
+  bad <- unique(s[is.na(out) & !is.na(s) & !s %in% c("", "NA")])
   if (length(bad)) {
     stop("unrecognised sex code(s): ", paste(utils::head(bad, 5), collapse = ", "),
          " (use M/F, male/female, or 1=male/2=female)", call. = FALSE)
@@ -266,8 +268,9 @@ expected_copies <- function(cls, is_par) {
   if (cls == "A" || is_par) return(rep(2, n_keep))
   if (is.null(sex)) return(rep(2, n_keep))
   e <- rep(NA_real_, n_keep)
-  if (cls == "X") { e[sex == "F"] <- 2; e[sex == "M"] <- 1 }
-  else            { e[sex == "M"] <- 1 }          # Y: none in females (NA)
+  # which(): a sample of unknown sex (NA) stays NA rather than erroring.
+  if (cls == "X") { e[which(sex == "F")] <- 2; e[which(sex == "M")] <- 1 }
+  else            { e[which(sex == "M")] <- 1 }   # Y: none in females (NA)
   e
 }
 warned_sex <- FALSE

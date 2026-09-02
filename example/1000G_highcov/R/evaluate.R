@@ -208,22 +208,26 @@ for (i in seq_len(nrow(manifest))) {
     fwrite(rbind(top[seq_len(min(25, nrow(top)))], d[class == "chrM"])[!duplicated(Region)],
            file.path(opt$out, sprintf("top_hits.%s.tsv", nm)), sep = "\t")
 
-    # Under the ploidy model chrY has no expected copies in females, so every
+    # Under the ploidy model chrY has no expected copies in females, so a
     # chrY region is fitted on the males alone: N there must equal the male
-    # count. (A linear test of SEX itself has no variance within the males,
-    # so this lives on the mtDNA family.)
-    if (ploidy && fam == "mtdna_cn" && !unrel) {
+    # count. Judged on the unadjusted runs (an adjusted model can drop
+    # samples without covariates) and as a fraction of bins, because the
+    # pseudo-autosomal bins of chrY are diploid in everyone. (A linear test
+    # of SEX itself has no variance within the males, so this lives on the
+    # mtDNA family.)
+    if (ploidy && nm %in% c("mtdna_cn", "mtdna_cn_int")) {
       dy <- d[toupper(sub("^chr", "", CHROM)) == "Y"]
       if (!nrow(dy)) {
         add(nm, "chrY_tested_in_males", "WARN", "no chrY bins tested", "")
       } else if (is.na(n_male)) {
-        add(nm, "chrY_tested_in_males", "INFO", sprintf("N on chrY: %s", paste(unique(dy$N), collapse = ",")),
+        add(nm, "chrY_tested_in_males", "INFO", sprintf("N on chrY: %s", paste(utils::head(unique(dy$N), 5), collapse = ",")),
             "no SEX_MF column to compare against")
       } else {
-        ok_n <- all(dy$N == n_male)
-        add(nm, "chrY_tested_in_males", if (ok_n) "PASS" else "FAIL",
-            sprintf("N on chrY: %s; males in the sex table: %d", paste(unique(dy$N), collapse = ","), n_male),
-            "chrY regions are fitted on the samples with an expected copy — the males")
+        frac_male <- mean(dy$N == n_male)
+        add(nm, "chrY_tested_in_males", if (frac_male >= 0.9) "PASS" else "FAIL",
+            sprintf("%.0f%% of %d chrY bins tested on N=%d (the males); other N: %s", 100 * frac_male, nrow(dy), n_male,
+                    paste(utils::head(setdiff(unique(dy$N), n_male), 5), collapse = ",")),
+            "chrY regions are fitted on the samples with an expected copy; PAR bins are diploid in everyone")
       }
     }
   }
