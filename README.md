@@ -35,6 +35,13 @@ That builds a synthetic cohort, runs the whole pipeline over it, and asserts on
 the results: that an injected association is recovered, that a null phenotype
 stays calibrated, and that the guardrails refuse malformed input.
 
+For the same pipeline on real data — the 3,202-sample 1000 Genomes 30x
+cohort, with phenotypes whose genomic architecture is known by construction,
+an upstream mosdepth fast-mode comparison carried through to the association
+statistics, and a runtime profile — see
+[`example/1000G_highcov/`](example/1000G_highcov/). It runs as a SLURM chain
+on an HPC, or anywhere in minutes via its smoke mode.
+
 To work through it by hand:
 
 ```bash

@@ -32,18 +32,55 @@ jobs:
 
       - name: Shell syntax
         run: |
-          for f in lib/*.sh scripts/*.sh tests/*.sh workflows/*.sh; do
+          for f in lib/*.sh scripts/*.sh tests/*.sh workflows/*.sh example/1000G_highcov/*.sh; do
             bash -n "$f" || exit 1
           done
 
       - name: R syntax
         run: |
-          for f in R/*.R R/external/*.R tests/*.R; do
+          for f in R/*.R R/external/*.R tests/*.R example/1000G_highcov/R/*.R; do
             Rscript -e "invisible(parse('$f'))" || exit 1
           done
 
       - name: End-to-end smoke test
         run: tests/smoke_test.sh
+
+  example:
+    name: 1000G example, smoke mode
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            tabix parallel r-base curl \
+            r-cran-optparse r-cran-data.table r-cran-survival
+
+      # Fetches the committed NGS-PCA 1000G results and simulates the
+      # mosdepth trees from their real QC rows, then runs the whole example
+      # locally: join, correct, analyze, truth checks, mode comparison and
+      # the profile report. Asserts the end state exists on top of the
+      # evaluation's own exit code.
+      - name: Run the example end to end
+        env:
+          EX_WORK_DIR: /tmp/depthsv-example-smoke
+        run: |
+          bash example/1000G_highcov/preamble.sh --smoke --ndim-only
+          bash example/1000G_highcov/run.sh --smoke --runner local
+
+      - name: Assert the end state
+        run: |
+          for f in preamble/ndim.txt preamble/ndim/ndim_by_mode.tsv \
+                   eval/standard/summary.md eval/fast/summary.md \
+                   compare/summary.md compare/calibration.tsv \
+                   compare/standard_vs_fast/concordance.tsv \
+                   profile/profile_report.md profile/timings.tsv; do
+            [ -s "/tmp/depthsv-example-smoke/$f" ] || { echo "missing $f"; exit 1; }
+          done
+          grep -H 'verdict' /tmp/depthsv-example-smoke/eval/*/summary.md \
+                            /tmp/depthsv-example-smoke/compare/summary.md
 
   container:
     name: suite in the container
