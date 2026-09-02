@@ -21,9 +21,11 @@
 # alongside it (or requires the matrix to exist already). Whichever mode's
 # evaluate job finishes last also runs the cross-mode comparison and the
 # profile report, so one submission takes the whole example to its end
-# state. Completed units are skipped on resubmission (the stage scripts'
-# .done markers), so a partial failure is rerun by resubmitting the same
-# command.
+# state. Every job receives the parameters this submission resolved
+# (inputs/run.env, frozen by stage 1), so a preamble landing mid-run cannot
+# change ndim under the array. Completed units are skipped on resubmission
+# (the stage scripts' parameter-aware .done markers), so a partial failure
+# is rerun by resubmitting the same command.
 #
 # The local runner executes the same stages in-process, which is what smoke
 # mode uses.
@@ -52,6 +54,9 @@ done
 force_flag=()
 [ "${EX_FORCE:-0}" != "1" ] || force_flag=(--force)
 
+selected_file="$EX_WORK_DIR/.selected_modes"
+lock_dir="$EX_WORK_DIR/.finalize.lock"
+
 modes_selected() {
     local m
     if [ "$mode_arg" = all ]; then
@@ -74,6 +79,7 @@ require_inputs() {                 # require_inputs <mode>
                      "$in/phenotypes.tsv" "$in/analyses.tsv"
     [ -s "$in/mosdepth.manifest.txt" ] \
         || dsv_die "$1: no mosdepth manifest in $in - run 00_fetch_inputs.sh and 01_prepare_inputs.sh first (EX_SMOKE=1 for a simulated tree)"
+    [ -f "$in/prepared.ok" ] || dsv_die "$1: inputs are not marked ready; rerun 01_prepare_inputs.sh"
 }
 
 # --- stage bodies ----------------------------------------------------------
@@ -121,21 +127,42 @@ do_unit() {                        # do_unit <mode> <region>
             --region "$region" ${force_flag[@]+"${force_flag[@]}"}
 }
 
-# Run the comparison and the profile once every prepared mode has been
-# evaluated. Under SLURM the chains run concurrently, so whichever evaluate
-# job finishes last is the one that sees a complete set and finalises.
+# The comparison and the profile run once every mode THIS submission
+# selected has been evaluated. Under SLURM the chains run concurrently, so
+# whichever evaluate job finishes last is the one that sees a complete set.
+# The lock is owned and dated: a finalize that was killed leaves a lock the
+# next attempt can recognise as stale, and a new submission clears it.
+finalize_modes() {
+    if [ -s "$selected_file" ]; then cat "$selected_file"; else ex_ready_modes | tr '\n' ' '; fi
+}
+
+lock_is_stale() {
+    local stamp age
+    [ -d "$lock_dir" ] || return 1
+    stamp="$(cat "$lock_dir/epoch" 2>/dev/null || echo 0)"
+    age=$(( $(date +%s) - stamp ))
+    [ "$age" -gt $(( ${EX_FINALIZE_LOCK_HOURS:-4} * 3600 )) ]
+}
+
 maybe_finalize() {
-    local m
-    for m in $(ex_ready_modes); do
+    local m rc=0
+    for m in $(finalize_modes); do
         [ -s "$EX_EVAL_DIR/$m/summary.md" ] || { dsv_log "finalize: waiting on mode '$m'"; return 0; }
     done
-    if ! mkdir "$EX_WORK_DIR/.finalize.lock" 2>/dev/null; then
-        dsv_log "finalize: another task holds the lock"
+    if lock_is_stale; then
+        dsv_log "finalize: removing a stale lock held by $(cat "$lock_dir/owner" 2>/dev/null || echo '?')"
+        rm -rf "$lock_dir"
+    fi
+    if ! mkdir "$lock_dir" 2>/dev/null; then
+        dsv_log "finalize: another task holds the lock ($(cat "$lock_dir/owner" 2>/dev/null || echo '?'))"
         return 0
     fi
-    bash "$EX_EXAMPLE_DIR/04_compare_modes.sh" || dsv_log "WARN: 04_compare_modes.sh exited non-zero"
-    bash "$EX_EXAMPLE_DIR/05_profile.sh"       || dsv_log "WARN: 05_profile.sh exited non-zero"
-    rmdir "$EX_WORK_DIR/.finalize.lock" 2>/dev/null || true
+    printf '%s\n' "${SLURM_JOB_ID:-pid$$}@$(hostname -s 2>/dev/null || echo unknown)" > "$lock_dir/owner"
+    date +%s > "$lock_dir/epoch"
+    bash "$EX_EXAMPLE_DIR/04_compare_modes.sh" || { rc=1; dsv_log "WARN: 04_compare_modes.sh exited non-zero"; }
+    bash "$EX_EXAMPLE_DIR/05_profile.sh"       || { rc=1; dsv_log "WARN: 05_profile.sh exited non-zero"; }
+    rm -rf "$lock_dir"
+    return "$rc"
 }
 
 # --- SLURM plumbing --------------------------------------------------------
@@ -146,11 +173,16 @@ submit() {                         # submit <mode> <stage> <sbatchArgs...> -- <s
     while [ $# -gt 0 ] && [ "$1" != "--" ]; do sb+=("$1"); shift; done
     shift
     mkdir -p "$EX_LOG_DIR"
-    # Resource strings are word-split on purpose; EX_SBATCH_EXTRA may be empty.
+    # Resource strings are word-split on purpose (globbing off while they
+    # are); EX_SBATCH_EXTRA may be empty. The environment travels
+    # explicitly so a site default of SBATCH_EXPORT=NONE cannot strip it.
+    set -f
     # shellcheck disable=SC2086
-    jid="$(sbatch --parsable "${sb[@]}" $EX_SBATCH_EXTRA \
+    jid="$(sbatch --parsable --export=ALL --kill-on-invalid-dep=yes "${sb[@]}" $EX_SBATCH_EXTRA \
                   "$EX_EXAMPLE_DIR/02_run_depthsv.sh" "$@")" \
-        || dsv_die "sbatch failed for $mode/$st"
+        || { set +f; dsv_die "sbatch failed for $mode/$st"; }
+    set +f
+    jid="${jid%%;*}"               # federated clusters append ;clustername
     ex_record_job "$mode" "$st" "$jid"
     dsv_log "[$mode] submitted $st as job $jid"
     printf '%s\n' "$jid"
@@ -191,10 +223,20 @@ slurm_chain() {                    # slurm_chain <mode>
 case "$stage" in
 
 driver)
+    [ -s "$EX_INPUTS_DIR/run.env" ] || dsv_die "no $EX_INPUTS_DIR/run.env: run 01_prepare_inputs.sh first (it freezes ndim and the covariates for this run)"
+    # A preamble still running would rewrite ndim.txt under the array; the
+    # frozen run.env protects this run, but the user almost certainly wants
+    # its result, so say so and stop.
+    if [ "$(ex_runner)" = slurm ] && command -v squeue >/dev/null 2>&1 \
+       && squeue --me --name=dsvx-preamble -h 2>/dev/null | grep -q .; then
+        dsv_die "a dsvx-preamble job is queued or running; let it finish, rerun 01_prepare_inputs.sh to pick up its ndim and covariates, then submit"
+    fi
+    modes_selected | tr '\n' ' ' > "$selected_file"
+    rm -rf "$lock_dir"
     case "$(ex_runner)" in
     local)
-        eval_rc=0
-        for mode in $(modes_selected); do
+        rc=0
+        for mode in $(cat "$selected_file"); do
             require_inputs "$mode"
             do_join "$mode"
             ex_timed "$mode" regions regions -- do_regions "$mode"
@@ -207,13 +249,13 @@ driver)
             done < "$regions_file"
             # An evaluation FAIL must not stop the other modes or the
             # comparison — the failure is easiest to read beside them.
-            bash "$EX_EXAMPLE_DIR/03_evaluate.sh" --mode "$mode" || eval_rc=1
+            bash "$EX_EXAMPLE_DIR/03_evaluate.sh" --mode "$mode" || rc=1
         done
-        maybe_finalize
-        exit "$eval_rc"
+        maybe_finalize || rc=1
+        exit "$rc"
         ;;
     slurm)
-        for mode in $(modes_selected); do slurm_chain "$mode"; done
+        for mode in $(cat "$selected_file"); do slurm_chain "$mode"; done
         dsv_log "monitor with:  squeue --me | grep dsvx-"
         dsv_log "results land in $EX_EVAL_DIR, $EX_COMPARE_DIR and $EX_PROFILE_DIR"
         ;;
@@ -253,7 +295,7 @@ unit)
 eval-exec)
     rc=0
     bash "$EX_EXAMPLE_DIR/03_evaluate.sh" --mode "$mode_arg" || rc=$?
-    maybe_finalize
+    maybe_finalize || rc=1
     exit "$rc"
     ;;
 

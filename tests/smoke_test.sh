@@ -91,6 +91,56 @@ else
     ok "join refuses a duplicated sample in the manifest"
 fi
 
+# A grown cohort must rebuild the matrix, not be served the old columns.
+mkdir -p "$work/grow"
+cp "$fixtures/mosdepth/SAMPLE001.by1000.regions.bed.gz" "$work/grow/SAMPLE999.by1000.regions.bed.gz"
+{ cat "$fixtures/mosdepth.input.txt"; echo "$work/grow/SAMPLE999.by1000.regions.bed.gz"; } > "$work/grow/manifest.txt"
+cp -R "$work/join" "$work/grow/join"
+bash "$DSV_ROOT/scripts/join.sh" --manifest "$work/grow/manifest.txt" --out "$work/grow/join" --threads 2 \
+     >"$work/grow.log" 2>&1 \
+  && check "a grown manifest rebuilds the matrix" \
+           "$(awk -F'\t' '$1=="samples"{print $2}' "$work/grow/join/depth.matrix.manifest")" "61" \
+  || bad_log "join on a grown manifest failed" "$work/grow.log"
+
+# The same bins in a different order have the same row count; only the
+# coordinate checksum can tell, and it is always on.
+mkdir -p "$work/reorder/mosdepth"; cp "$fixtures"/mosdepth/*.gz "$work/reorder/mosdepth/"
+gzip -cd "$work/reorder/mosdepth/SAMPLE003.by1000.regions.bed.gz" | awk 'NR<=200{a[NR]=$0; next} {print} END{for(i=1;i<=200;i++) print a[i]}' \
+  | bgzip > "$work/reorder/x.gz" && mv "$work/reorder/x.gz" "$work/reorder/mosdepth/SAMPLE003.by1000.regions.bed.gz"
+ls "$work/reorder/mosdepth"/*.gz > "$work/reorder/manifest.txt"
+if bash "$DSV_ROOT/scripts/join.sh" --manifest "$work/reorder/manifest.txt" --out "$work/reorder/out" --threads 2 >/dev/null 2>&1; then
+    bad "join accepted a sample with the same bins in a different order"
+else
+    ok "join refuses a sample whose coordinates differ in order"
+fi
+
+# Contigs longer than the .tbi range get a .csi index and stay addressable.
+mkdir -p "$work/csi/mosdepth"
+for f in "$fixtures"/mosdepth/*.gz; do
+    gzip -cd "$f" | awk 'BEGIN{OFS="\t"} {$2+=600000000; $3+=600000000; print}' | bgzip > "$work/csi/mosdepth/$(basename "$f")"
+done
+ls "$work/csi/mosdepth"/*.gz > "$work/csi/manifest.txt"
+if bash "$DSV_ROOT/scripts/join.sh" --manifest "$work/csi/manifest.txt" --out "$work/csi/join" --threads 2 >"$work/csi.log" 2>&1 \
+   && [ -s "$work/csi/join/depth.matrix.txt.gz.csi" ] \
+   && bash "$DSV_ROOT/scripts/correct.sh" --matrix "$work/csi/join/depth.matrix.txt.gz" --pcs "$fixtures/svd.pcs.txt" \
+        --coverage "$fixtures/autosomal.median.txt" --region chr1 --out "$work/csi/corr" --ndim 4 --jobs 2 >>"$work/csi.log" 2>&1; then
+    check "coordinates beyond 2^29 are indexed with .csi and corrected" \
+          "$(bgzip -dc "$work/csi/corr/corrected_ndim4.chr1.txt.gz" | grep -cv '^#')" "200"
+else
+    bad_log "csi path failed" "$work/csi.log"
+fi
+
+# Sample names strip any mosdepth bin size, not only 1000.
+check "sample name strips .by<any bin size>" "$(dsv_sample_name /x/HG1.by5000.regions.bed.gz)" "HG1"
+
+# A sizes file in the other naming convention still yields windows, and a
+# contig it lacks is reported rather than silently dropped.
+printf '1\t200000\n' > "$work/chrom.nochr.sizes"
+bash "$DSV_ROOT/scripts/regions.sh" --matrix "$matrix" --window 100000 --sizes "$work/chrom.nochr.sizes" \
+     > "$work/regions.nochr.txt" 2>"$work/regions.nochr.err"
+check "regions accept the other contig naming convention" "$(grep -c . "$work/regions.nochr.txt")" "2"
+check "  and report a contig missing from the sizes file" "$(grep -c 'no entry' "$work/regions.nochr.err")" "1"
+
 # A sample built against different intervals must be refused, not silently
 # pasted into the wrong coordinates.
 mkdir -p "$work/bad/mosdepth"; cp "$fixtures"/mosdepth/*.gz "$work/bad/mosdepth/"
@@ -149,6 +199,32 @@ bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverage "
             <(bgzip -dc "$work/corrected/corrected_ndim4.chr1.txt.gz") \
   && ok "a ten-chunk unit indexes its stats and matches the two-chunk result" \
   || bad_log "ten-chunk unit failed" "$work/manychunks.log"
+
+# A finished unit is reused only for the same inputs: a changed coverage
+# table must redo it, and the result must differ (every median doubled
+# shifts every log2 ratio by exactly -1 before correction).
+awk -F'\t' 'BEGIN{OFS="\t"} NR==1 {print; next} {$2=$2*2; print}' "$cov" > "$work/cov.double.txt"
+cell() { bgzip -dc "$1" | awk -F'\t' 'NR==2{printf "%.3f", $5}'; }
+bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverage "$cov" \
+    --region chr1 --out "$work/recorrect" --ndim 0 --jobs 2 --chunk 100 >"$work/recorrect.log" 2>&1
+v0="$(cell "$work/recorrect/corrected_ndim0.chr1.txt.gz")"
+bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverage "$work/cov.double.txt" \
+    --region chr1 --out "$work/recorrect" --ndim 0 --jobs 2 --chunk 100 >>"$work/recorrect.log" 2>&1
+v1="$(cell "$work/recorrect/corrected_ndim0.chr1.txt.gz")"
+if grep -q "different inputs or parameters; redoing" "$work/recorrect.log" \
+   && awk -v a="$v0" -v b="$v1" 'BEGIN{exit !((a - b) > 0.999 && (a - b) < 1.001)}'; then
+    ok "a changed coverage table redoes a finished unit (log2 shift $v0 -> $v1)"
+else
+    bad_log "changed coverage table did not redo the unit ($v0 -> $v1)" "$work/recorrect.log"
+fi
+
+# --force must redo a finished unit even though its marker says complete.
+before="$(dsv_mtime "$work/corrected/corrected_ndim4.chr1.txt.gz")"
+sleep 1
+bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverage "$cov" \
+    --region chr1 --out "$work/corrected" --ndim 4 --jobs 2 --chunk 100 --force >>"$work/correct.log" 2>&1
+after="$(dsv_mtime "$work/corrected/corrected_ndim4.chr1.txt.gz")"
+[ "$before" != "$after" ] && ok "--force redoes a finished unit" || bad "--force did not redo the unit"
 
 # A duplicated or missing coverage median must be refused, not resolved by
 # row order or propagated as NA through the projection.
@@ -315,6 +391,24 @@ if bash "$DSV_ROOT/scripts/analyze.sh" --corrected "$work/corrected/corrected_nd
 else
     ok "analysis of a PC-corrected matrix refuses to run without the PCs"
 fi
+
+# Two models of the same response under a defaulted name would overwrite one
+# output in turn; the second must be refused unless it is given --name.
+bash "$DSV_ROOT/scripts/analyze.sh" --corrected "$work/corrected/corrected_ndim4.chr1.txt.gz" \
+    --pheno "$pheno" --pcs "$pcs" --model "quant_trait~cov_resids+age" --region chr1 \
+    --out "$work/collide" -- --minObs 30 >"$work/collide.log" 2>&1 || bad_log "single-model analysis failed" "$work/collide.log"
+if bash "$DSV_ROOT/scripts/analyze.sh" --corrected "$work/corrected/corrected_ndim4.chr1.txt.gz" \
+        --pheno "$pheno" --pcs "$pcs" --model "quant_trait~cov_resids+age+sex" --region chr1 \
+        --out "$work/collide" -- --minObs 30 >>"$work/collide.log" 2>&1; then
+    bad "a second model of the same response silently replaced the first"
+else
+    ok "a second model of the same response is refused without --name"
+fi
+bash "$DSV_ROOT/scripts/analyze.sh" --corrected "$work/corrected/corrected_ndim4.chr1.txt.gz" \
+    --pheno "$pheno" --pcs "$pcs" --model "quant_trait~cov_resids+age+sex" --name quant_sex --region chr1 \
+    --out "$work/collide" -- --minObs 30 >>"$work/collide.log" 2>&1 \
+  && [ -s "$work/collide/quant_sex.linear.chr1.txt.gz" ] \
+  && ok "  and runs under its own --name" || bad_log "named second model failed" "$work/collide.log"
 
 # An absent chromosome must fail loudly rather than yield an empty result.
 if bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" \

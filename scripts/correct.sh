@@ -57,11 +57,18 @@ slug="$(printf '%s' "$region" | tr ':' '_' | tr -d ' ')"
 final="$out_dir/corrected_ndim${ndim}.${slug}.txt.gz"
 stats="$out_dir/stats_ndim${ndim}.${slug}.txt"
 
-if [ "$force" -eq 0 ] && dsv_output_complete "$final"; then
+# What this unit is about to compute, so a finished unit is only reused for
+# the same inputs and parameters (a swapped coverage table or an edited
+# driver invalidates it; the region and ndim are in the filename already).
+sig="$(printf 'stage=correct\nmatrix=%s\npcs=%s\ncoverage=%s\nregion=%s\nndim=%s\nextra=%s\nscript=%s\nrscript=%s' \
+       "$(dsv_file_sig "$matrix")" "$(dsv_file_sig "$pcs")" "$(dsv_file_sig "$coverage")" \
+       "$region" "$ndim" "${extra[*]+"${extra[*]}"}" "$(dsv_script_sig "$0")" "$(dsv_script_sig "$rscript")")"
+
+if [ "$force" -eq 0 ] && dsv_output_complete "$final" "$sig"; then
     dsv_log "already complete, skipping: $final"
     exit 0
 fi
-dsv_output_reset "$final"
+dsv_output_reset "$final" "$force"
 
 # R worker diagnostics — the [align] sample-drop counts, rank warnings and any
 # real error — go to a per-unit log rather than /dev/null. A wrong
@@ -137,8 +144,9 @@ if compgen -G "$stats_dir/stats.*.txt" > /dev/null; then
         head -n 1 "$(ls "$stats_dir"/stats.*.txt | head -1)"
         for f in "$stats_dir"/stats.*.txt; do tail -n +2 "$f"; done | sort -k1,1 -k2,2n
     } > "$stats"
-    bgzip -f "$stats" && tabix -f -p bed "${stats}.gz"
+    bgzip -f "$stats"
+    tabix -f -p bed "${stats}.gz" 2>/dev/null || tabix -f -p bed --csi "${stats}.gz"
     dsv_log "stats: ${stats}.gz"
 fi
 
-dsv_output_commit "$final" "$n_in"
+dsv_output_commit "$final" "$n_in" "$sig"

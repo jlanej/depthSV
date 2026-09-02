@@ -41,6 +41,8 @@ option_list <- list(
               help = "NGS-PCA's autosomal.median.txt (SAMPLE, AUTO_HQ_median, N_BINS); optional"),
   make_option("--covariates", type = "character", default = NULL,
               help = "preamble covariates.tsv (SAMPLE, GPC1..); merged into the phenotype table"),
+  make_option("--null-from", type = "character", dest = "null_from", default = NULL,
+              help = "phenotypes.tsv of another mode whose MTDNA_CN_NULL is copied by sample ID"),
   make_option("--suffix", type = "character", default = ".by1000.",
               help = "trailing suffix to strip from upstream sample IDs [default %default]"),
   make_option("--seed",   type = "integer",   default = 20260818L),
@@ -54,10 +56,28 @@ note <- function(...) message(sprintf(...))
 warned <- 0L
 warn <- function(...) { warned <<- warned + 1L; message("[warn] ", sprintf(...)) }
 
+# Replace an output only when its content changed: the pipeline keys finished
+# work on its inputs, and a byte-identical table rewritten with a new mtime
+# should not look like a new input.
+write_if_changed <- function(dt, path) {
+  tmp <- paste0(path, ".tmp")
+  fwrite(dt, tmp, sep = "\t")
+  if (file.exists(path) && isTRUE(unname(tools::md5sum(tmp)) == unname(tools::md5sum(path)))) {
+    unlink(tmp)
+    return(invisible(FALSE))
+  }
+  file.rename(tmp, path)
+  invisible(TRUE)
+}
+
 strip_suffix <- function(ids, suffix) {
-  ids <- as.character(ids)
+  # Upstream tables have carried IDs with a stray space BEFORE the suffix
+  # ("HG02635 .by1000."); fread trims one table's IDs and not the other's, so
+  # trim both before and after the suffix comes off.
+  ids <- trimws(as.character(ids))
   hit <- endsWith(ids, suffix)
   ids[hit] <- substr(ids[hit], 1L, nchar(ids[hit]) - nchar(suffix))
+  ids <- trimws(ids)
   attr(ids, "stripped") <- sum(hit)
   ids
 }
@@ -75,6 +95,7 @@ qc <- fread(opt$qc)
 for (col in c("SAMPLE_ID", "HQ_MEDIAN_COV", "MTDNA_CN", "INFERRED_SEX")) {
   if (!col %in% names(qc)) stop(opt$qc, " lacks the ", col, " column", call. = FALSE)
 }
+qc[, SAMPLE_ID := trimws(as.character(SAMPLE_ID))]
 if (anyDuplicated(qc$SAMPLE_ID)) stop("duplicated SAMPLE_ID in ", opt$qc, call. = FALSE)
 qc[, HQ_MEDIAN_COV := suppressWarnings(as.numeric(HQ_MEDIAN_COV))]
 qc[, MTDNA_CN := suppressWarnings(as.numeric(MTDNA_CN))]
@@ -124,7 +145,7 @@ if (!is.null(opt$median)) {
   note("[coverage] %d samples from the QC table's HQ_MEDIAN_COV -> autosomal.median.txt", nrow(cov))
 }
 if (!nrow(cov)) stop("no usable coverage medians; the correction stage needs them", call. = FALSE)
-fwrite(cov, file.path(opt$out, "autosomal.median.txt"), sep = "\t")
+write_if_changed(cov, file.path(opt$out, "autosomal.median.txt"))
 
 # --- phenotypes ------------------------------------------------------------
 
@@ -159,11 +180,23 @@ if (all(c("MITO_COV_RATIO", "MEAN_AUTOSOMAL_COV") %in% names(qc))) {
 
 pheno[, LOG2_MTDNA_CN := ifelse(is.finite(MTDNA_CN) & MTDNA_CN > 0, log2(MTDNA_CN), NA_real_)]
 
-# Permuted null: shuffle the observed values among the samples that have one.
-set.seed(opt$seed)
+# Permuted null: shuffle the observed values among the samples that have one
+# — or, for a second mode, copy the first mode's permutation by sample ID so
+# every mode tests the same null values (a tree with a different sample set
+# would otherwise get an unrelated permutation, and the cross-mode
+# comparison of the null would measure that, not the mode).
 pheno[, MTDNA_CN_NULL := NA_real_]
-have <- which(is.finite(pheno$MTDNA_CN))
-pheno$MTDNA_CN_NULL[have] <- sample(pheno$MTDNA_CN[have])
+if (!is.null(opt$null_from) && file.exists(opt$null_from)) {
+  src <- fread(opt$null_from, select = c("SAMPLE", "MTDNA_CN_NULL"))
+  src[, SAMPLE := trimws(as.character(SAMPLE))]
+  pheno[, MTDNA_CN_NULL := src$MTDNA_CN_NULL[match(SAMPLE, src$SAMPLE)]]
+  note("[phenotypes] MTDNA_CN_NULL copied from %s for %d of %d samples", basename(opt$null_from),
+       sum(is.finite(pheno$MTDNA_CN_NULL)), nrow(pheno))
+} else {
+  set.seed(opt$seed)
+  have <- which(is.finite(pheno$MTDNA_CN))
+  pheno$MTDNA_CN_NULL[have] <- sample(pheno$MTDNA_CN[have])
+}
 
 pheno[, SEX := fifelse(qc$INFERRED_SEX == "M", 1L,
                 fifelse(qc$INFERRED_SEX == "F", 0L, NA_integer_))]
@@ -189,7 +222,7 @@ if (!is.null(opt$covariates)) {
   if (n_hit < 0.9 * nrow(pheno)) warn("fewer than 90%% of samples have genotype PCs; adjusted models shrink accordingly")
 }
 
-fwrite(pheno, file.path(opt$out, "phenotypes.tsv"), sep = "\t")
+write_if_changed(pheno, file.path(opt$out, "phenotypes.tsv"))
 note("[phenotypes] %d samples (MTDNA_CN present for %d; SEX: %d M / %d F) -> phenotypes.tsv",
      nrow(pheno), n_cn, sum(pheno$SEX == 1L, na.rm = TRUE), sum(pheno$SEX == 0L, na.rm = TRUE))
 
@@ -200,7 +233,7 @@ if (!"SAMPLE" %in% names(pcs)) stop(opt$pcs, " lacks a SAMPLE column", call. = F
 ids <- strip_suffix(pcs$SAMPLE, opt$suffix)
 if (anyDuplicated(ids)) stop("stripping '", opt$suffix, "' left duplicated sample IDs", call. = FALSE)
 pcs[, SAMPLE := as.character(ids)]
-fwrite(pcs, file.path(opt$out, "svd.pcs.txt"), sep = "\t")
+write_if_changed(pcs, file.path(opt$out, "svd.pcs.txt"))
 note("[pcs] %d samples, %d PCs; suffix '%s' stripped from %d IDs -> svd.pcs.txt",
      nrow(pcs), sum(grepl("^PC[0-9]+$", names(pcs))), opt$suffix, attr(ids, "stripped"))
 
@@ -212,8 +245,10 @@ note("[pcs] %d samples, %d PCs; suffix '%s' stripped from %d IDs -> svd.pcs.txt"
 overlap <- length(intersect(pcs$SAMPLE, cov$SAMPLE))
 note("[align] PC/coverage overlap: %d of %d PC samples", overlap, nrow(pcs))
 if (overlap == 0) stop("no overlap between PC and coverage sample IDs; check --suffix", call. = FALSE)
-if (overlap < 0.9 * nrow(pcs)) {
-  warn("PC/coverage overlap below 90%% - the correction stage will drop the difference")
+if (overlap < nrow(pcs)) {
+  only_pc <- setdiff(pcs$SAMPLE, cov$SAMPLE)
+  warn("%d PC sample(s) have no coverage median and will be dropped by the correction stage: %s",
+       length(only_pc), paste(utils::head(only_pc, 5), collapse = ", "))
 }
 
 if (warned > 0L) note("[prepare] finished with %d warning(s) - read them before running", warned)

@@ -35,6 +35,16 @@ EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 export EX_EXAMPLE_DIR
 
 source "$EX_EXAMPLE_DIR/../../lib/common.sh"   # sets -euo pipefail, DSV_ROOT
+
+# The parameters stage 1 froze for this run (inputs/run.env) load BEFORE the
+# configuration, as defaults that only an explicit environment overrides:
+# every job of a submission then agrees on ndim and the covariates however
+# the preamble's files change underneath. The work-dir default here must
+# match config.sh's.
+EX_WORK_DIR="${EX_WORK_DIR:-/scratch/${USER:-$(id -un)}/depthsv_1000G_highcov}"
+# shellcheck disable=SC1090
+[ ! -s "${EX_INPUTS_DIR:-$EX_WORK_DIR/inputs}/run.env" ] || source "${EX_INPUTS_DIR:-$EX_WORK_DIR/inputs}/run.env"
+
 source "$EX_EXAMPLE_DIR/config.sh"
 
 # --- modes -----------------------------------------------------------------
@@ -102,10 +112,12 @@ ex_join_dir() {
 # would skip every analysis as already complete and hand back stale results.
 ex_assoc_dir() { printf '%s/%s/assoc_ndim%s\n' "$EX_RUN_DIR" "$1" "$EX_NDIM"; }
 
-# A mode is ready once 00 and 01 have produced its inputs.
+# A mode is ready once 00 and 01 have produced its inputs and 01 finished
+# the mode (prepared.ok); a prepare that died part-way leaves no marker.
 ex_mode_ready() {                  # ex_mode_ready <mode>
     local in; in="$(ex_inputs_dir "$1")"
-    [ -s "$in/mosdepth.manifest.txt" ] && [ -s "$in/svd.pcs.txt" ] && [ -s "$in/phenotypes.tsv" ]
+    [ -f "$in/prepared.ok" ] && [ -s "$in/mosdepth.manifest.txt" ] \
+        && [ -s "$in/svd.pcs.txt" ] && [ -s "$in/phenotypes.tsv" ]
 }
 
 ex_ready_modes() {

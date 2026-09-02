@@ -37,6 +37,13 @@ done
 
 dsv_require_cmd Rscript awk gzip find sort comm
 
+# Replace a generated file only when its content changed, so finished
+# pipeline units keyed on these inputs are not invalidated by a rerun that
+# produced the same bytes.
+install_if_changed() {             # install_if_changed <tmp> <dest>
+    if [ -f "$2" ] && cmp -s "$1" "$2"; then rm -f "$1"; else mv "$1" "$2"; fi
+}
+
 prepared=""
 for mode in $EX_MODES; do
     ex_check_mode "$mode"
@@ -50,6 +57,9 @@ for mode in $EX_MODES; do
     source "$paths_env"
     in_dir="$(ex_inputs_dir "$mode")"
     mkdir -p "$in_dir"
+    # Not ready until this block finishes: a failed prepare must not leave
+    # the previous run's tables looking usable.
+    rm -f "$in_dir/prepared.ok"
     dsv_log "=== mode: $mode (source: $EX_M_SOURCE) ==="
 
     # --- tables ------------------------------------------------------------
@@ -57,9 +67,17 @@ for mode in $EX_MODES; do
     [ -z "$EX_M_MEDIAN_TABLE" ] || median_opt=(--median "$EX_M_MEDIAN_TABLE")
     cov_opt=()
     [ ! -s "$EX_PREAMBLE_DIR/covariates.tsv" ] || cov_opt=(--covariates "$EX_PREAMBLE_DIR/covariates.tsv")
+    # One permuted null for every mode: the permutation is drawn once (for the
+    # first mode prepared, normally standard) and copied by sample ID, so a
+    # tree with a different sample set gets the same null values, not a
+    # different permutation.
+    null_opt=()
+    if [ "$mode" != standard ] && [ -s "$(ex_inputs_dir standard)/phenotypes.tsv" ]; then
+        null_opt=(--null-from "$(ex_inputs_dir standard)/phenotypes.tsv")
+    fi
     Rscript "$EX_EXAMPLE_DIR/R/prepare_inputs.R" \
         --qc "$EX_M_QC_TABLE" --pcs "$EX_M_PCS_FILE" \
-        ${median_opt[@]+"${median_opt[@]}"} ${cov_opt[@]+"${cov_opt[@]}"} \
+        ${median_opt[@]+"${median_opt[@]}"} ${cov_opt[@]+"${cov_opt[@]}"} ${null_opt[@]+"${null_opt[@]}"} \
         --suffix "$EX_SAMPLE_SUFFIX" --seed "$EX_PHENO_SEED" \
         --out "$in_dir" 2>&1 | tee "$in_dir/prepare.summary.txt" >&2
 
@@ -87,7 +105,7 @@ for mode in $EX_MODES; do
             printf 'mtdna_cn_adj\tlinear\tMTDNA_CN~cov_resids%s\n' "$adj"
             printf 'log2_mtdna_cn_adj\tlinear\tLOG2_MTDNA_CN~cov_resids%s\n' "$adj"
             printf 'mtdna_cn_null_adj\tlinear\tMTDNA_CN_NULL~cov_resids%s\n' "$adj"
-            printf 'sex_linear\tlinear\tSEX~cov_resids%s\n' "$adj_nosex"
+            printf 'sex_linear_adj\tlinear\tSEX~cov_resids%s\n' "$adj_nosex"
             printf 'inferred_sex\tlogistic\tSEX~cov_resids\n'
         else
             printf 'mtdna_cn\tlinear\tMTDNA_CN~cov_resids\n'
@@ -96,12 +114,14 @@ for mode in $EX_MODES; do
             printf 'sex_linear\tlinear\tSEX~cov_resids\n'
             printf 'inferred_sex\tlogistic\tSEX~cov_resids\n'
         fi
-    } > "$in_dir/analyses.tsv"
+    } > "$in_dir/analyses.tsv.tmp"
+    install_if_changed "$in_dir/analyses.tsv.tmp" "$in_dir/analyses.tsv"
     dsv_log "$mode: analyses -> $(grep -vc '^#' "$in_dir/analyses.tsv") models (covariates: $EX_COVARIATES; ndim $EX_NDIM)"
 
     # --- mosdepth manifest --------------------------------------------------
     manifest="$in_dir/mosdepth.manifest.txt"
-    find "$EX_M_MOSDEPTH_DIR" -maxdepth 1 -name '*.regions.bed.gz' 2>/dev/null | sort > "$manifest" || true
+    find "$EX_M_MOSDEPTH_DIR" -maxdepth 1 -name '*.regions.bed.gz' 2>/dev/null | sort > "$manifest.tmp" || true
+    install_if_changed "$manifest.tmp" "$manifest"
     n_md="$(grep -c . "$manifest" || true)"
 
     if [ "$n_md" -eq 0 ]; then
@@ -114,7 +134,8 @@ for mode in $EX_MODES; do
     # actually meet the coverage table before hours of joining, because an
     # ID-suffix mismatch is the one way this wiring silently shrinks to an
     # empty cohort.
-    while IFS= read -r f; do dsv_sample_name "$f"; done < "$manifest" | sort > "$in_dir/samples.txt"
+    while IFS= read -r f; do dsv_sample_name "$f"; done < "$manifest" | sort > "$in_dir/samples.txt.tmp"
+    install_if_changed "$in_dir/samples.txt.tmp" "$in_dir/samples.txt"
     matched="$(
         join "$in_dir/samples.txt" <(awk -F'\t' 'NR>1{print $1}' "$in_dir/autosomal.median.txt" | sort) | grep -c . || true
     )"
@@ -132,13 +153,34 @@ for mode in $EX_MODES; do
         !($1 in max) { order[++n] = $1 }
         $3 > max[$1] { max[$1] = $3 }
         END { for (i = 1; i <= n; i++) print order[i] "\t" max[order[i]] }
-    ' > "$in_dir/chrom.sizes"
+    ' > "$in_dir/chrom.sizes.tmp"
+    install_if_changed "$in_dir/chrom.sizes.tmp" "$in_dir/chrom.sizes"
     dsv_log "$mode: $(grep -c . "$in_dir/chrom.sizes") contigs -> chrom.sizes"
 
+    : > "$in_dir/prepared.ok"
     prepared="$prepared $mode"
 done
 
 [ -n "$prepared" ] || dsv_die "no mode was prepared"
+
+# --- freeze this run's parameters ---------------------------------------------
+# Every later job re-sources config.sh, which re-derives EX_NDIM from
+# preamble/ndim.txt and EX_COVARIATES from covariates.tsv at that moment.
+# The values resolved HERE are what the tables above were built with, so
+# they are written as defaults that lib.sh loads before config.sh: an
+# explicit environment still wins, config defaults no longer do. Rerun this
+# stage after the preamble to re-freeze.
+{
+    printf '# frozen by 01_prepare_inputs.sh %s - explicit environment still wins\n' "$(dsv_now)"
+    for v in EX_SMOKE EX_MODES EX_NDIM EX_COVARIATES EX_N_GPCS EX_WINDOW EX_MIN_OBS \
+             EX_MEDIAN_SOURCE EX_CONTIG_REGEX EX_PHENO_SEED EX_EVAL_PROFILE EX_SAMPLE_SUFFIX; do
+        # A guarded plain assignment: %q quoting is exact there, whereas inside
+        # a double-quoted ${VAR:=word} the backslashes would survive.
+        printf '[ -n "${%s:+x}" ] || %s=%q\n' "$v" "$v" "${!v}"
+    done
+} > "$EX_INPUTS_DIR/run.env.tmp"
+install_if_changed "$EX_INPUTS_DIR/run.env.tmp" "$EX_INPUTS_DIR/run.env"
+dsv_log "frozen for this run: ndim=$EX_NDIM covariates=$EX_COVARIATES window=$EX_WINDOW min-obs=$EX_MIN_OBS -> $EX_INPUTS_DIR/run.env"
 
 # --- cross-mode sample sets --------------------------------------------------
 # The comparison joins on region, so differing sample sets do not break it —

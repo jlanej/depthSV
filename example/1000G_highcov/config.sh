@@ -18,7 +18,7 @@
 # mosdepth modes exist. NGSPCA_WORK_DIR is that pipeline's WORK_DIR; the
 # per-mode trees below default to its layout and can be overridden
 # individually.
-NGSPCA_WORK_DIR="${NGSPCA_WORK_DIR:-/scratch/${USER}/1000G_highcov}"
+NGSPCA_WORK_DIR="${NGSPCA_WORK_DIR:-/scratch/${USER:-$(id -un)}/1000G_highcov}"
 
 EX_MOSDEPTH_DIR_STANDARD="${EX_MOSDEPTH_DIR_STANDARD:-${NGSPCA_WORK_DIR}/mosdepth_output}"
 EX_NGSPCA_DIR_STANDARD="${EX_NGSPCA_DIR_STANDARD:-${NGSPCA_WORK_DIR}/ngspca_output}"
@@ -60,6 +60,11 @@ EX_MEDIAN_SOURCE="${EX_MEDIAN_SOURCE:-auto}"
 # table only — mosdepth files are not committed there). This is what makes
 # the example testable without rerunning the upstream pipeline. The seed
 # control never comes from GitHub: it is a local calibration run or nothing.
+#
+# In a real (non-smoke) run that fallback pairs YOUR mosdepth depths with
+# PCs and medians computed from SOMEONE ELSE'S run of the same samples — the
+# PCs are only valid for the matrix they came from — so it is opt-in.
+EX_ALLOW_GITHUB_FALLBACK="${EX_ALLOW_GITHUB_FALLBACK:-0}"
 EX_GITHUB_RAW_BASE="${EX_GITHUB_RAW_BASE:-https://raw.githubusercontent.com}"
 EX_GITHUB_REPO="${EX_GITHUB_REPO:-jlanej/NGS-PCA}"
 EX_GITHUB_REF="${EX_GITHUB_REF:-master}"
@@ -68,7 +73,8 @@ EX_GITHUB_PATH_FAST="${EX_GITHUB_PATH_FAST:-example/1000G_highcov/output_fast}"
 
 # --- this example's working area -------------------------------------------
 
-EX_WORK_DIR="${EX_WORK_DIR:-/scratch/${USER}/depthsv_1000G_highcov}"
+# (lib.sh resolves the same default before loading inputs/run.env.)
+EX_WORK_DIR="${EX_WORK_DIR:-/scratch/${USER:-$(id -un)}/depthsv_1000G_highcov}"
 
 # Which modes to run, in order. standard first: seedctl shares its matrix.
 # A mode whose upstream inputs are missing is skipped, so the default is
@@ -191,9 +197,16 @@ fi
 EX_PHENO_SEED="${EX_PHENO_SEED:-20260818}"
 
 # --- parallelism (within one unit of work) ---------------------------------
+#
+# Defaults follow the allocation when there is one: workers take every CPU
+# and the compression threads half of them (they overlap with the workers).
+EX_JOBS="${EX_JOBS:-${SLURM_CPUS_PER_TASK:-8}}"
+EX_THREADS="${EX_THREADS:-$(( EX_JOBS / 2 > 0 ? EX_JOBS / 2 : 1 ))}"
 
-EX_JOBS="${EX_JOBS:-8}"
-EX_THREADS="${EX_THREADS:-4}"
+# A finalize lock older than this is treated as abandoned (an evaluate job
+# killed by its time limit mid-comparison would otherwise block every later
+# comparison).
+EX_FINALIZE_LOCK_HOURS="${EX_FINALIZE_LOCK_HOURS:-4}"
 
 # --- scheduler -------------------------------------------------------------
 

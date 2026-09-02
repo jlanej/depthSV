@@ -77,15 +77,15 @@ The matrix is written with `bgzip` and a `tabix` index rather than plain gzip.
 That is what lets every later stage read a region instead of scanning the whole
 file, and it is what makes an arbitrary interval a valid unit of work.
 
-Row counts are verified inside every extraction worker. `paste` aligns by
-position and cannot tell that one sample was processed against a different
-contig set — the offending sample's depths would simply be attributed to the
-wrong coordinates, and nothing downstream would notice. A mismatch therefore
-stops the run at the offending sample, not at the end. `--strict-coords`
-additionally compares a checksum of the coordinate columns, which is worth
-enabling for data you did not generate yourself. A manifest listing the same
-sample twice is refused for the same reason: later stages match columns by
-name.
+Row counts and a checksum of the coordinate columns are verified inside every
+extraction worker, in the same decompression pass. `paste` aligns by position
+and cannot tell that one sample was processed against a different contig set
+or bin order — the offending sample's depths would simply be attributed to
+the wrong coordinates, and nothing downstream would notice. A mismatch
+therefore stops the run at the offending sample, not at the end. A manifest
+listing the same sample twice is refused for the same reason: later stages
+match columns by name. A finished matrix is reused only for the same manifest
+*content*; adding a sample and re-running rebuilds it.
 
 Columns are extracted `--jobs` at a time and pasted in batches sized near √N
 by default, which keeps every step clear of the open-file limit — the limit is
@@ -165,7 +165,6 @@ them prints the full usage. The rest are these:
 | `--case-level L` | analyze | which level of a two-level text response is the case |
 | `--name` | analyze | label for a single-model run; defaults to the response variable |
 | `--batch-size N` | join | samples per `paste` batch; the default sizes it near √N, inside the open-file limit |
-| `--strict-coords` | join | also checksum the coordinate columns |
 | `--projection qr` | correct, analyze — after `--` | use the Householder projection instead of the default |
 | `--sampleIdPattern` | correct, analyze — after `--` | PCRE to recover sample IDs from column names |
 
@@ -210,8 +209,12 @@ scripts/regions.sh --matrix work/join/depth.matrix.txt.gz \
 ```
 
 A windowed list partitions the matrix: every bin lands in exactly one unit,
-with windows aligned up to bin edges, so concatenating the shards yields each
-region exactly once.
+with windows aligned up to bin edges (the bin size is read from the first
+data row, so bins are assumed uniform), so concatenating the shards yields
+each region exactly once. The sizes file may use either contig naming
+convention; a contig the matrix has and the sizes file lacks is reported on
+stderr rather than silently left out, and no match at all is an error.
+Contigs longer than 2²⁹ bp get a `.csi` index instead of `.tbi`.
 
 That one list drives every dispatcher, which is what keeps them interchangeable:
 
@@ -240,6 +243,18 @@ moves it into place and writes a `.done` marker. A stage that dies leaves the
 temporary file for inspection and no marker, so re-running redoes exactly that
 unit and nothing else. A failed join additionally resumes from its last
 finished batch.
+
+A finished unit is reused only for the same inputs and parameters. Each stage
+records what it computed — every input's identity (content checksum for the
+sample tables, size and mtime for the matrix), every parameter, the model
+formula, the driver's checksum — in a `.params` file beside the output, and a
+rerun whose signature differs redoes the unit and logs which lines changed. So
+a swapped coverage table, an edited model with the same name, a different
+`--min-obs`, or a grown manifest never inherits an old result. `--force`
+removes the markers first, so a forced run that then fails cannot leave the
+previous result behind under a valid marker. Two models of the same response
+under a defaulted name are refused rather than taking turns overwriting one
+output; give the second one `--name`.
 
 The correction and analysis stages keep each unit's R diagnostics in a `.log`
 beside its output; the sample-alignment drop counts there are the first thing

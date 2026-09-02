@@ -33,6 +33,8 @@ option_list <- list(
   make_option("--top-k",    type = "integer",   dest = "top_k", default = 100L),
   make_option("--profile",  type = "character", default = "real", help = "real | smoke"),
   make_option("--timings",  type = "character", default = NULL, help = "optional timings.tsv for the runtime table"),
+  make_option("--a-source", type = "character", dest = "a_source", default = "", help = "provenance of mode a's inputs"),
+  make_option("--b-source", type = "character", dest = "b_source", default = "", help = "provenance of mode b's inputs"),
   make_option("--out",      type = "character", help = "output directory")
 )
 opt <- parse_args(OptionParser(option_list = option_list))
@@ -66,9 +68,12 @@ lambda_gc <- function(p) {
   median(qchisq(p, 1, lower.tail = FALSE)) / qchisq(0.5, 1)
 }
 
-manifest <- fread(opt$analyses, header = FALSE, sep = "\t",
-                  col.names = c("name", "method", "model"))
-manifest <- manifest[!grepl("^#", name) & nzchar(name)]
+# Comment lines may sit anywhere in the manifest (the sweep skips them
+# wherever they are), so filter before parsing rather than letting fread stop
+# at the first one.
+mf_lines <- readLines(opt$analyses)
+mf_lines <- mf_lines[!grepl("^\\s*#", mf_lines) & nzchar(trimws(mf_lines))]
+manifest <- fread(text = mf_lines, header = FALSE, sep = "\t", col.names = c("name", "method", "model"))
 
 r_pass <- if (opt$profile == "smoke") 0.95 else 0.99
 
@@ -104,7 +109,10 @@ for (i in seq_len(nrow(manifest))) {
   cls <- function(cl) by_class[class == cl]$r_stat[1]
 
   r_stat <- suppressWarnings(cor(j$STAT_a, j$STAT_b))
-  status <- if (!is.finite(r_stat)) "WARN" else if (r_stat >= r_pass) "PASS" else "WARN"
+  # A correlation over a handful of regions says nothing: require a real
+  # overlap before calling the pair concordant.
+  min_common <- max(100L, as.integer(0.5 * min(nrow(a), nrow(b))))
+  status <- if (nrow(j) < min_common) "WARN" else if (!is.finite(r_stat)) "WARN" else if (r_stat >= r_pass) "PASS" else "WARN"
   verdicts <- c(verdicts, status)
 
   rows[[nm]] <- data.table(
@@ -134,7 +142,8 @@ for (i in seq_len(nrow(manifest))) {
     r_stat_autosome = cls("autosome"),
     lambda_a        = lambda_gc(a$P),
     lambda_b        = lambda_gc(b$P),
-    detail          = sprintf("top-%d overlap on |stat|", k)
+    detail          = if (nrow(j) < min_common) sprintf("only %d regions in common (need %d)", nrow(j), min_common)
+                      else sprintf("top-%d overlap on |stat|", k)
   )
 }
 
@@ -163,9 +172,16 @@ if (!is.null(opt$timings) && file.exists(opt$timings)) {
 overall <- if ("FAIL" %in% verdicts) "FAIL" else if ("WARN" %in% verdicts) "PASS with warnings" else "PASS"
 fmt <- function(x, d = 4) ifelse(is.na(x), "NA", formatC(x, digits = d, format = "f"))
 
+synthetic <- grepl("synthetic", paste(opt$a_source, opt$b_source), ignore.case = TRUE)
 md <- c(sprintf("# depthSV 1000G example — %s vs %s", opt$a_name, opt$b_name), "",
         sprintf("- verdict: **%s** (PASS needs r(stat) >= %.2f per analysis; `%s` profile)",
-                overall, r_pass, opt$profile), "",
+                overall, r_pass, opt$profile),
+        if (nzchar(opt$a_source)) sprintf("- %s inputs: `%s`", opt$a_name, opt$a_source) else character(0),
+        if (nzchar(opt$b_source)) sprintf("- %s inputs: `%s`", opt$b_name, opt$b_source) else character(0),
+        if (synthetic) paste("- **SYNTHETIC COMPARISON.** One side's depths were simulated from the other's",
+                             "tables with a small perturbation (smoke mode, no upstream fast-mode",
+                             "outputs). This exercises the machinery and says nothing about mosdepth.") else character(0),
+        "",
         "| analysis | status | common | r(Estimate) | r(stat) | rho(|stat|) | sign agree (|stat|>2) | top-K Jaccard | med rel dEst | r(stat) chrM | r(stat) sex | r(stat) auto |",
         "|---|---|---|---|---|---|---|---|---|---|---|---|",
         conc[, sprintf("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |",

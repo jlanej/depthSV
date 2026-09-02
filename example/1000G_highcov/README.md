@@ -98,8 +98,9 @@ export EX_WORK_DIR=/scratch/$USER/depthsv_1000G_highcov
 # site specifics, if any: export EX_SBATCH_EXTRA="--partition=... --account=..."
 # module names, if needed: export DSV_MODULES="parallel R htslib"
 
-sbatch preamble.sh           # once: MP-derived ndim + genotype-PC covariates (24 cores / 248 GB / <24 h)
-bash run.sh                  # 00 -> 01 -> 02: resolve, prepare, submit
+mkdir -p "$EX_WORK_DIR/logs"
+sbatch --output="$EX_WORK_DIR/logs/%x.%j.out" preamble.sh   # once: MP-derived ndim + genotype-PC covariates
+bash run.sh                  # after the preamble finishes: 00 -> 01 -> 02: resolve, prepare (freeze), submit
 ```
 
 The preamble is optional but is what makes the mtDNA-CN models *reasonable*
@@ -214,9 +215,11 @@ stage merges the genotype PCs into `phenotypes.tsv` and writes the adjusted
 manifest: `mtdna_cn` (unadjusted, the pure truth check) plus
 `mtdna_cn_adj`, `log2_mtdna_cn_adj`, `mtdna_cn_null_adj` with
 `+SEX+GPC1..GPC10` (`EX_N_GPCS`; or set `EX_COVARIATES` to any `+`-joined
-list of phenotype columns, `none` for unadjusted), `sex_linear` with the
-genotype PCs only, and the logistic run unchanged. The evaluation applies
-each family's checks to its adjusted variant.
+list of phenotype columns, `none` for unadjusted), `sex_linear_adj` with the
+genotype PCs only, and the logistic run unchanged. The coverage PCs the
+correction removed are added to every model by the analysis stage itself.
+The evaluation applies each family's checks to its adjusted variant; the
+permuted null is drawn once and copied to every mode by sample ID.
 
 Requirements beyond the pipeline's: `plink2` ≥ 2.00a5 (for `--pmerge-list`
 and `--pca allele-wts`; `EX_PREAMBLE_MODULES` names the module if your site
@@ -361,11 +364,24 @@ the driver; you should not need to set it yourself here.
   when they disagree, which is the signature of a QC pass run before its
   PCA run or against the other mode's. A run that reused a cached NGS-PCA
   matrix writes no median table; the QC fallback covers it.
-- **Reruns resume.** Every unit writes a `.done` marker; resubmitting
-  `02_run_depthsv.sh` redoes only what is missing. `--force` redoes a
-  mode's units deliberately. Association output lands in
-  `assoc_ndim<EX_NDIM>/`, so changing `EX_NDIM` can never silently reuse a
-  previous sweep's results.
+- **Reruns resume, and parameters are frozen per run.** Every unit writes a
+  `.done` marker beside a `.params` record of its inputs and parameters;
+  resubmitting `02_run_depthsv.sh` redoes only what is missing or was made
+  with different inputs (a changed model, covariate set, threshold or
+  coverage table is redone, not reused). `--force` redoes a mode's units
+  deliberately. Stage 1 freezes the resolved `EX_NDIM`, `EX_COVARIATES`,
+  window and thresholds into `inputs/run.env`, which every later job loads
+  before `config.sh` — so a preamble finishing mid-run cannot change ndim
+  under the array. **Rerun `01_prepare_inputs.sh` after the preamble** to
+  pick up its ndim and covariates; the driver refuses to submit while a
+  `dsvx-preamble` job is still queued.
+- **Provenance travels with the verdicts.** Each mode's input source
+  (`local`, `smoke:github`, `smoke:…synthetic-fast`, …) is printed in its
+  evaluation summary and in the comparison; a synthetic fast tree is
+  flagged as **SYNTHETIC** wherever a number derived from it appears. In a
+  real run, pairing local depths with the committed GitHub PCs is opt-in
+  (`EX_ALLOW_GITHUB_FALLBACK=1`) because those PCs belong to another run's
+  matrix.
 - **The PC correction absorbs globally structured phenotypes — measurably.**
   mtDNA copy number loads on the leading depth PCs (it is one of NGS-PCA's
   own QC overlays); across a 64-sample subset the first 20 PCs explain

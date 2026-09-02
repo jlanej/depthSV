@@ -40,10 +40,16 @@ for mode in $modes; do
     mkdir -p "$out"
     regions_opt=()
     [ ! -s "$(ex_regions_file "$mode")" ] || regions_opt=(--regions "$(ex_regions_file "$mode")")
+    # Provenance travels with the verdict: a synthetic smoke tree is labelled
+    # as such in the summary, not only in paths.env.
+    EX_M_SOURCE=""
+    # shellcheck disable=SC1090
+    [ ! -s "$(ex_paths_env "$mode")" ] || source "$(ex_paths_env "$mode")"
     ex_timed "$mode" evaluate evaluate -- \
         Rscript "$EX_EXAMPLE_DIR/R/evaluate.R" \
             --assoc "$assoc" --analyses "$in_dir/analyses.tsv" \
             --mode "$mode" --profile "$EX_EVAL_PROFILE" --out "$out" \
+            --source "${EX_M_SOURCE:-unknown}" \
             ${regions_opt[@]+"${regions_opt[@]}"} \
         || rc=1
 done

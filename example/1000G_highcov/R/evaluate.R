@@ -33,6 +33,7 @@ option_list <- list(
   make_option("--regions",  type = "character", default = NULL, help = "the region list the sweep ran over"),
   make_option("--mode",     type = "character", default = "?"),
   make_option("--profile",  type = "character", default = "real", help = "threshold profile: real | smoke"),
+  make_option("--source",   type = "character", default = "", help = "provenance of this mode's inputs (from paths.env)"),
   make_option("--out",      type = "character", help = "output directory")
 )
 opt <- parse_args(OptionParser(option_list = option_list))
@@ -77,9 +78,10 @@ lambda_gc <- function(p) {
   median(qchisq(p, 1, lower.tail = FALSE)) / qchisq(0.5, 1)
 }
 
-manifest <- fread(opt$analyses, header = FALSE, sep = "\t",
-                  col.names = c("name", "method", "model"))
-manifest <- manifest[!grepl("^#", name) & nzchar(name)]
+# Comment lines may sit anywhere in the manifest; filter before parsing.
+mf_lines <- readLines(opt$analyses)
+mf_lines <- mf_lines[!grepl("^\\s*#", mf_lines) & nzchar(trimws(mf_lines))]
+manifest <- fread(text = mf_lines, header = FALSE, sep = "\t", col.names = c("name", "method", "model"))
 
 n_units <- NA_integer_
 if (!is.null(opt$regions) && file.exists(opt$regions)) {
@@ -229,6 +231,10 @@ n_fail <- sum(checks$status == "FAIL"); n_warn <- sum(checks$status == "WARN")
 md <- c(sprintf("# depthSV 1000G example — evaluation: %s mode", opt$mode),
         "",
         sprintf("- profile: `%s`", opt$profile),
+        if (nzchar(opt$source)) sprintf("- inputs: `%s`%s", opt$source,
+                                        if (grepl("synthetic", opt$source, ignore.case = TRUE))
+                                          " — **SYNTHETIC**: simulated depths, a machinery check only" else "")
+        else character(0),
         sprintf("- verdict: **%s** (%d FAIL, %d WARN, %d PASS)",
                 if (n_fail) "FAIL" else if (n_warn) "PASS with warnings" else "PASS",
                 n_fail, n_warn, sum(checks$status == "PASS")),

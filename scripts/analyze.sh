@@ -119,16 +119,32 @@ chunk="$(dsv_chunk_lines "$probe_row" "$chunk")"
 extra_q=""
 [ ${#extra[@]} -eq 0 ] || extra_q="$(printf '%q ' "${extra[@]}")"
 
-run_one() {                        # run_one <name> <method> <model>
-    local name="$1" meth="$2" form="$3"
+run_one() {                        # run_one <name> <method> <model> [defaulted_name]
+    local name="$1" meth="$2" form="$3" defaulted="${4:-0}"
     local final="$out_dir/${name}.${meth}.${slug}.txt.gz"
     local log="$out_dir/${name}.${meth}.${slug}.log"
+    local sig params
 
-    if [ "$force" -eq 0 ] && dsv_output_complete "$final"; then
+    # Everything the result depends on but the filename does not carry.
+    sig="$(printf 'stage=analyze\ncorrected=%s\npheno=%s\npcs=%s\nndim=%s\nregion=%s\nmethod=%s\nmodel=%s\nextra=%s\nscript=%s\nrscript=%s' \
+           "$(dsv_file_sig "$corrected")" "$(dsv_file_sig "$pheno")" \
+           "$([ "$ndim" -eq 0 ] || dsv_file_sig "$pcs")" "$ndim" "$region" "$meth" "$form" \
+           "${extra[*]+"${extra[*]}"}" "$(dsv_script_sig "$0")" "$(dsv_script_sig "$rscript")")"
+
+    # A defaulted name is the response variable, so two models of the same
+    # response would take turns overwriting one output. Refuse that rather
+    # than redo it quietly.
+    params="$(dsv_output_params "$final")"
+    if [ "$defaulted" -eq 1 ] && [ -f "$params" ] \
+       && [ "$(grep '^model=' "$params")" != "model=$form" ]; then
+        dsv_die "$(basename "$final") already holds a different model of $name ($(grep '^model=' "$params" | cut -d= -f2-)); pass --name to keep both"
+    fi
+
+    if [ "$force" -eq 0 ] && dsv_output_complete "$final" "$sig"; then
         dsv_log "already complete, skipping: $(basename "$final")"
         return 0
     fi
-    dsv_output_reset "$final"
+    dsv_output_reset "$final" "$force"
 
     # R worker diagnostics — the [align] sample-drop counts and any real
     # error — go to a per-analysis log rather than /dev/null.
@@ -168,7 +184,7 @@ run_one() {                        # run_one <name> <method> <model>
         dsv_die "$name produced no result rows for $region (every region failed QC?). Set DSV_ALLOW_EMPTY=1 to accept an empty shard."
     fi
 
-    dsv_output_commit "$final"
+    dsv_output_commit "$final" "" "$sig"
 }
 
 # --- dispatch --------------------------------------------------------------
@@ -198,5 +214,9 @@ else
     # two models against the same file would otherwise resolve to the same
     # output path and the second would be skipped as already complete.
     # Non-alphanumerics are stripped so Surv(time,event) yields a usable name.
-    run_one "${name:-$(printf '%s' "${model%%~*}" | tr -cd '[:alnum:]_.')}" "$method" "$model"
+    if [ -n "$name" ]; then
+        run_one "$name" "$method" "$model" 0
+    else
+        run_one "$(printf '%s' "${model%%~*}" | tr -cd '[:alnum:]_.')" "$method" "$model" 1
+    fi
 fi
