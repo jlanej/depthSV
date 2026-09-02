@@ -108,6 +108,16 @@ depth matrix to remove technical structure.
 remove depends on the batch structure of your cohort and is best established
 empirically against your own data; the pipeline does not assume a value.
 
+**Sex chromosomes are normalised by their expected copies** when a sex table
+is given (`--sex FILE`, `--sex-col NAME`; coded M/F, male/female or 1/2 —
+0/1 is refused as ambiguous), with the pseudo-autosomal regions from `--par`
+(`conf/par.grch38.bed`, `conf/par.grch37.bed`): chrX outside the PARs is one
+copy in males, chrY one copy in males and none in females, whose chrY depth
+becomes missing rather than the log2 of nothing. Without it every
+sex-chromosome bin is a sex indicator and dominates any phenotype that
+correlates with sex. The log2 ratio is floored at `--winsor-log2` (default
+−3) so a zero-depth sample cannot carry a region's whole leverage.
+
 Also writes per-region pre- and post-correction summary statistics. Nothing
 reads them automatically; they are the evidence for choosing the QC thresholds
 applied at the next stage.
@@ -126,9 +136,10 @@ Tests each region against a phenotype and streams one row of summary statistics
 per region.
 
 Pass `--model` and `--method` for a single analysis, or `--pheno-manifest` for a
-sweep. The manifest is tab-separated — `name`, `method`, `model` — so adding a
-phenotype is a line in a file. Analyses that already completed are skipped, so a
-sweep can be extended without repeating finished work.
+sweep. The manifest is tab-separated — `name`, `method`, `model`, and an
+optional fourth column of flags (`rank-int`, `robust`, comma-separated) — so
+adding a phenotype is a line in a file. Analyses that already completed are
+skipped, so a sweep can be extended without repeating finished work.
 
 **The PCs the correction removed are part of every model.** Residualising
 depth against PC1..PCk and then testing without those PCs in the model deflates
@@ -147,6 +158,17 @@ rather than guessed, because a guess once reversed effect directions. A
 binary or survival phenotype with fewer cases, controls or events than
 `--min-cases` (default 20) is refused up front.
 
+A region whose depth is missing for some samples — chrY in females under the
+ploidy model — is fitted on the samples that have it, with the design
+refactorised for that subset (and cached, since the subset is the same for
+every such region); nothing is imputed. Every row reports `MAXSHARE`, the
+largest share of the residualised depth's sum of squares carried by one
+sample, and a region above `--max-share` (default 0.5) is skipped: a test
+carried by one participant is the read-depth analogue of a minor allele
+count of one. `--rank-int` applies a rank-based inverse-normal transform to a
+quantitative response and `--robust` uses HC1 standard errors (linear) or the
+robust variance (Cox); both are also per-row manifest flags.
+
 ### Options
 
 Each stage takes its inputs and output directory as flags; `--help` on any of
@@ -161,8 +183,13 @@ them prints the full usage. The rest are these:
 | `--min-obs N` | analyze | skip a region with fewer complete observations |
 | `--min-variance X` | analyze | skip a region whose depth does not vary |
 | `--min-cases N` | analyze | refuse a binary or survival phenotype with fewer cases, controls or events (default 20) |
+| `--max-share X` | analyze | skip a region where one sample carries more than this share of the residual depth sum of squares (default 0.5) |
+| `--rank-int`, `--robust` | analyze | inverse-normal transform of the response; HC1 / robust variance. Per row in a manifest: fourth column `rank-int,robust` |
 | `--pcs FILE`, `--ndim K` | analyze | the PC table and count the correction used; `k` defaults to the corrected file's name, the table to `DSV_PCS` |
 | `--case-level L` | analyze | which level of a two-level text response is the case |
+| `--sex FILE`, `--sex-col NAME` | correct | per-sample sex, turning on the ploidy model for chrX/chrY (`DSV_SEX`, `DSV_SEX_COL`) |
+| `--par BED` | correct | pseudo-autosomal regions, diploid in both sexes (`conf/par.grch38.bed`) |
+| `--winsor-log2 X` | correct | floor on the log2 ratio (default −3) |
 | `--name` | analyze | label for a single-model run; defaults to the response variable |
 | `--batch-size N` | join | samples per `paste` batch; the default sizes it near √N, inside the open-file limit |
 | `--projection qr` | correct, analyze — after `--` | use the Householder projection instead of the default |
@@ -264,7 +291,8 @@ The pipeline refuses to proceed on: a sample whose region count disagrees with
 the others, a manifest listing the same sample twice, a chromosome absent from
 the input, a duplicated `SAMPLE` in the phenotype, PC or coverage table (or in
 the matrix header after `--sampleIdPattern`), a missing or non-positive
-coverage median, a binary response whose coding is ambiguous, too few cases,
+coverage median, a sex table coded 0/1, a binary response whose coding is
+ambiguous, too few cases,
 a PC-corrected matrix analysed without its PCs, an association shard with no
 rows, an output that fails its integrity check, and a correction stage that
 produces fewer rows than it read.
@@ -284,7 +312,9 @@ error rather than an empty result.
 | principal components | `SAMPLE`, `PC1` … `PCn` |
 | coverage | `SAMPLE`, `AUTO_HQ_median` |
 | phenotypes | `SAMPLE` plus every term in your models; `SAMPLE` must be unique |
-| phenotype manifest | `name`, `method`, `model`, tab-separated, `#` for comments |
+| phenotype manifest | `name`, `method`, `model`, optional `flags`, tab-separated, `#` for comments |
+| sex table | `SAMPLE` and a sex column (M/F, male/female or 1/2); may be the phenotype table |
+| PAR | BED of the pseudo-autosomal regions (`conf/par.grch38.bed`, `conf/par.grch37.bed`) |
 
 If your matrix column names are not plain sample identifiers, pass
 `--sampleIdPattern` after `--` — a PCRE whose first capture group is kept. There is no
@@ -296,17 +326,19 @@ than none.
 One tab-separated row per tested region, bgzip-compressed and tabix-indexed:
 
 ```
-#CHROM  START  END  Region  N  NCase  NControl  <statistics>
+#CHROM  START  END  Region  N  NCase  NControl  <statistics>  MAXSHARE
 ```
 
-`N` is the number of observed depths the region was tested on (a few missing
-values are mean-imputed; regions with real missingness fall to `--min-obs`).
-`NCase`/`NControl` are meaningful for logistic and Cox; for linear both carry
-the sample count.
+`N` is the number of samples the region was tested on: a sample whose depth
+is missing for the region (no expected copies — chrY in a female) is left out
+of that region's fit, not imputed. `NCase`/`NControl` are meaningful for
+logistic and Cox; for linear both carry the sample count. `MAXSHARE` is the
+largest share of the residualised depth's sum of squares carried by one
+sample (see `--max-share`).
 
-The trailing statistics depend on the method:
+The statistics between them depend on the method:
 
-| Method | Trailing columns |
+| Method | Statistics |
 |---|---|
 | linear | `BETA`, `SE`, `STAT` (t), `P`, `LOG10P` |
 | logistic | `BETA`, `SE`, `STAT` (Wald z), `P`, `LOG10P`, `LRT_P`, `CONVERGED` |

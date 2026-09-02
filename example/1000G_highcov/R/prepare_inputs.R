@@ -200,6 +200,10 @@ if (!is.null(opt$null_from) && file.exists(opt$null_from)) {
 
 pheno[, SEX := fifelse(qc$INFERRED_SEX == "M", 1L,
                 fifelse(qc$INFERRED_SEX == "F", 0L, NA_integer_))]
+# The same sex as M/F, for the correction stage's ploidy model (which refuses
+# a 0/1 coding as ambiguous).
+pheno[, SEX_MF := fifelse(as.character(qc$INFERRED_SEX) %in% c("M", "F"),
+                          as.character(qc$INFERRED_SEX), NA_character_)]
 
 # Covariate candidates for models a user might add; unused by the shipped
 # analyses.tsv but free to carry.

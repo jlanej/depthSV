@@ -11,8 +11,14 @@
 #                              additionally pins the effect size: on a chrM
 #                              bin the corrected depth IS log2(chrM/median),
 #                              so the slope should sit near 1.
-#   inferred_sex               inferred from X/Y coverage ratios upstream, so
-#                              the sex chromosomes must dominate.
+#   sex_linear                 SEX was inferred from X/Y coverage upstream.
+#                              Under the ploidy model chrX is normalised by
+#                              its expected copies, so the share of SEX's
+#                              variance that corrected chrX depth explains
+#                              must be small: a misaligned sex table gives
+#                              R^2 ~ 0.5 there. chrY is fitted on males
+#                              only, so N on chrY must equal the male count.
+#   inferred_sex               the same response through the logistic engine.
 #   mtdna_cn_null              a seeded permutation; must stay calibrated.
 #
 # Autosomal hits for the mtDNA phenotypes are reported, not judged — real
@@ -34,13 +40,33 @@ option_list <- list(
   make_option("--mode",     type = "character", default = "?"),
   make_option("--profile",  type = "character", default = "real", help = "threshold profile: real | smoke"),
   make_option("--source",   type = "character", default = "", help = "provenance of this mode's inputs (from paths.env)"),
+  make_option("--pheno",    type = "character", default = NULL, help = "phenotypes.tsv, for the male count chrY tests must equal"),
+  make_option("--samples",  type = "character", default = NULL, help = "samples.txt: the matrix columns, so that count covers tested samples only"),
+  make_option("--ploidy",   type = "character", default = "1", help = "1 if the correction ran with the ploidy model (EX_PLOIDY)"),
   make_option("--out",      type = "character", help = "output directory")
 )
 opt <- parse_args(OptionParser(option_list = option_list))
 for (req in c("assoc", "analyses", "out")) if (is.null(opt[[req]])) stop("--", req, " is required", call. = FALSE)
 if (!opt$profile %in% c("real", "smoke")) stop("--profile must be real or smoke", call. = FALSE)
 dir.create(opt$out, recursive = TRUE, showWarnings = FALSE)
-smoke <- opt$profile == "smoke"
+smoke  <- opt$profile == "smoke"
+ploidy <- opt$ploidy == "1"
+
+# Males among the samples the sweep could test: in the matrix (samples.txt)
+# and with the phenotype. The phenotype table carries every upstream sample,
+# which is more than a smoke tree simulates.
+n_male <- NA_integer_
+if (!is.null(opt$pheno) && file.exists(opt$pheno)) {
+  ph <- fread(opt$pheno)
+  if ("SEX_MF" %in% names(ph)) {
+    tested <- rep(TRUE, nrow(ph))
+    if (!is.null(opt$samples) && file.exists(opt$samples)) {
+      tested <- tested & ph$SAMPLE %in% trimws(readLines(opt$samples))
+    }
+    if ("MTDNA_CN" %in% names(ph)) tested <- tested & is.finite(ph$MTDNA_CN)
+    n_male <- sum(tested & ph$SEX_MF == "M", na.rm = TRUE)
+  }
+}
 
 checks <- data.table(analysis = character(), check = character(), status = character(),
                      value = character(), detail = character())
@@ -81,7 +107,8 @@ lambda_gc <- function(p) {
 # Comment lines may sit anywhere in the manifest; filter before parsing.
 mf_lines <- readLines(opt$analyses)
 mf_lines <- mf_lines[!grepl("^\\s*#", mf_lines) & nzchar(trimws(mf_lines))]
-manifest <- fread(text = mf_lines, header = FALSE, sep = "\t", col.names = c("name", "method", "model"))
+manifest <- fread(text = mf_lines, header = FALSE, sep = "\t", fill = TRUE)
+setnames(manifest, 1:3, c("name", "method", "model"))
 
 n_units <- NA_integer_
 if (!is.null(opt$regions) && file.exists(opt$regions)) {
@@ -120,8 +147,9 @@ for (i in seq_len(nrow(manifest))) {
   top <- d[order(-abs_stat)]
 
   # Checks key on the analysis family: the covariate-adjusted variants
-  # (preamble.sh ran) carry the same truth as their unadjusted namesakes.
-  fam <- sub("_adj$", "", nm)
+  # (preamble.sh ran) and the inverse-normal-transformed ones carry the same
+  # truth as their plain namesakes.
+  fam <- sub("_int$", "", sub("_adj$", "", nm))
 
   if (fam %in% c("mtdna_cn", "log2_mtdna_cn")) {
     n_m <- sum(d$class == "chrM")
@@ -154,41 +182,72 @@ for (i in seq_len(nrow(manifest))) {
     }
     fwrite(rbind(top[seq_len(min(25, nrow(top)))], d[class == "chrM"])[!duplicated(Region)],
            file.path(opt$out, sprintf("top_hits.%s.tsv", nm)), sep = "\t")
+
+    # Under the ploidy model chrY has no expected copies in females, so every
+    # chrY region is fitted on the males alone: N there must equal the male
+    # count. (A linear test of SEX itself has no variance within the males,
+    # so this lives on the mtDNA family.)
+    if (ploidy && fam == "mtdna_cn") {
+      dy <- d[toupper(sub("^chr", "", CHROM)) == "Y"]
+      if (!nrow(dy)) {
+        add(nm, "chrY_tested_in_males", "WARN", "no chrY bins tested", "")
+      } else if (is.na(n_male)) {
+        add(nm, "chrY_tested_in_males", "INFO", sprintf("N on chrY: %s", paste(unique(dy$N), collapse = ",")),
+            "no SEX_MF column to compare against")
+      } else {
+        ok_n <- all(dy$N == n_male)
+        add(nm, "chrY_tested_in_males", if (ok_n) "PASS" else "FAIL",
+            sprintf("N on chrY: %s; males in the sex table: %d", paste(unique(dy$N), collapse = ","), n_male),
+            "chrY regions are fitted on the samples with an expected copy — the males")
+      }
+    }
   }
 
   if (fam == "sex_linear") {
-    n_sex <- sum(d$class == "sex")
-    if (n_sex == 0) {
-      add(nm, "sex_top_hit", "FAIL", "no chrX/chrY bins tested", "")
-    } else {
+    # Under the ploidy model chrX is normalised by its expected copies, so
+    # the corrected chrX depth should explain little of SEX. The linear
+    # t-statistic on a binary response converts to that R^2 exactly
+    # (R^2 = t^2 / (t^2 + df)); a misaligned sex table leaves each bin at
+    # R^2 ~ 0.5, while real residual sex effects sit far below.
+    dx <- d[toupper(sub("^chr", "", CHROM)) == "X"]
+    if (!ploidy) {
       add(nm, "sex_top_hit", if (top$class[1] == "sex") "PASS" else "FAIL",
           sprintf("top |stat| at %s (stat=%.1f)", top$Region[1], top$STAT[1]),
-          "INFERRED_SEX comes from X/Y coverage ratios; the sex chromosomes must dominate")
+          "without the ploidy model (EX_PLOIDY=0) the sex chromosomes must dominate")
+    } else if (!nrow(dx)) {
+      add(nm, "sex_signal_removed", "WARN", "no chrX bins tested", "")
+    } else {
+      dx[, df := N - 2L]
+      dx[, r2 := STAT^2 / (STAT^2 + df)]
+      med_r2 <- median(dx$r2, na.rm = TRUE); max_r2 <- max(dx$r2, na.rm = TRUE)
+      status <- if (med_r2 > 0.35) "FAIL" else if (med_r2 > 0.15) "WARN" else "PASS"
+      add(nm, "sex_signal_removed", status,
+          sprintf("median R^2(SEX ~ chrX depth) = %.3f, max %.3f over %d bins", med_r2, max_r2, nrow(dx)),
+          "ploidy model applied: a misaligned sex table gives ~0.5; residual per-bin sex effects stay well below")
       k <- min(100L, nrow(top))
-      frac_top_sex <- mean(top$class[seq_len(k)] == "sex")
-      add(nm, "sex_top100_purity", if (frac_top_sex >= 0.9) "PASS" else "WARN",
-          sprintf("%.0f%% of top %d on chrX/Y", 100 * frac_top_sex, k))
+      add(nm, "sex_top100_share", "INFO",
+          sprintf("%.0f%% of top %d on chrX/Y; top |stat| at %s (stat=%.1f)",
+                  100 * mean(top$class[seq_len(k)] == "sex"), k, top$Region[1], top$STAT[1]))
     }
     fwrite(top[seq_len(min(25, nrow(top)))],
            file.path(opt$out, "top_hits.sex_linear.tsv"), sep = "\t")
   }
 
   if (fam == "inferred_sex") {
-    # Engine coverage, not a rank assertion: sex separates the corrected
-    # depth on chrX/Y completely, and under complete separation the
-    # logistic Wald z COLLAPSES (Hauck-Donner) — the strongest real effects
-    # report the weakest z. The linear run above carries the truth check;
-    # here the collapse itself is the observation worth recording.
+    # Engine coverage on a binary response. Without the ploidy model the
+    # sexes are completely separated on chrX/Y and the Wald z collapses
+    # (Hauck-Donner); with it there is nothing to separate.
     k <- min(100L, nrow(top))
     frac_top_sex <- mean(top$class[seq_len(k)] == "sex")
     med_sex_z  <- suppressWarnings(median(d[class == "sex"]$abs_stat))
     med_auto_z <- suppressWarnings(median(d[class == "autosome"]$abs_stat))
     add(nm, "logistic_ran", "PASS", sprintf("%d regions", nrow(d)),
         "the logistic engine completed over the sweep")
-    add(nm, "wald_separation_note", "INFO",
+    add(nm, "logistic_sex_note", "INFO",
         sprintf("median |z|: sex=%.2f autosome=%.2f; %.0f%% of top %d on chrX/Y",
                 med_sex_z, med_auto_z, 100 * frac_top_sex, k),
-        "small sex-chromosome z under complete separation is Hauck-Donner, not a miss")
+        if (ploidy) "ploidy model applied; chrX/Y are expected to look like autosomes here"
+        else "small sex-chromosome z under complete separation is Hauck-Donner, not a miss")
     add(nm, "case_control_counts", "INFO",
         sprintf("NCase=%d NControl=%d", top$NCase[1], top$NControl[1]),
         "NCase should equal the male count from the QC table")

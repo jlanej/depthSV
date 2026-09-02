@@ -11,8 +11,10 @@
 # Covers: the guardrails fire on bad input; the injected association is
 # recovered with the estimate lm() and coxph() give; a null phenotype stays
 # calibrated, including one driven by the PC the correction removed; a
-# binary phenotype keeps its direction under either coding; a region is a
-# usable unit of work, including one wide enough to need ten chunks.
+# binary phenotype keeps its direction under either coding; the ploidy model
+# takes the sex signal out of chrX and fits chrY on males only; a zero-depth
+# sample is floored and a single-sample outlier region is skipped; a region
+# is a usable unit of work, including one wide enough to need ten chunks.
 # ---------------------------------------------------------------------------
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
@@ -40,6 +42,9 @@ echo "[1/6] fixtures"
 Rscript "$DSV_ROOT/tests/make_fixtures.R" "$fixtures" 60 200 >/dev/null 2>&1
 [ -s "$fixtures/mosdepth.input.txt" ] && ok "fixtures generated" || bad "fixture generation"
 pcs="$fixtures/svd.pcs.txt"; cov="$fixtures/autosomal.median.txt"; pheno="$fixtures/phenotypes.tsv"
+par="$fixtures/par.bed"
+n_male="$(awk -F'\t' 'NR==1{for(i=1;i<=NF;i++) if($i=="sex") c=i} NR>1 && $c=="M"{n++} END{print n+0}' "$pheno")"
+n_female=$(( $(tail -n +2 "$pheno" | wc -l | tr -d ' ') - n_male ))
 
 # --- join ------------------------------------------------------------------
 echo "[2/6] join"
@@ -49,8 +54,8 @@ bash "$DSV_ROOT/scripts/join.sh" --manifest "$fixtures/mosdepth.input.txt" \
 
 matrix="$work/join/depth.matrix.txt.gz"
 check "matrix is tabix-indexed" "$([ -s "$matrix.tbi" ] && echo yes || echo no)" "yes"
-check "matrix has both contigs"  "$(tabix -l "$matrix" | tr '\n' ' ' | sed 's/ $//')" "chr1 chr2"
-check "manifest records regions" "$(awk -F'\t' '$1=="regions"{print $2}' "$work/join/depth.matrix.manifest")" "400"
+check "matrix has every contig"  "$(tabix -l "$matrix" | tr '\n' ' ' | sed 's/ $//')" "chr1 chr2 chrX chrY"
+check "manifest records regions" "$(awk -F'\t' '$1=="regions"{print $2}' "$work/join/depth.matrix.manifest")" "800"
 
 # Re-running a completed join must be a no-op.
 before="$(dsv_mtime "$matrix")"
@@ -69,7 +74,7 @@ bash "$DSV_ROOT/scripts/join.sh" --manifest "$fixtures/mosdepth.input.txt" \
 # A windowed region list must partition the matrix — every bin in exactly one
 # window — including when the requested window is not a multiple of the bin
 # size (it is rounded up to a bin edge).
-printf 'chr1\t200000\nchr2\t200000\n' > "$work/chrom.sizes"
+printf 'chr1\t200000\nchr2\t200000\nchrX\t200000\nchrY\t200000\n' > "$work/chrom.sizes"
 bash "$DSV_ROOT/scripts/regions.sh" --matrix "$matrix" --window 2500 \
      --sizes "$work/chrom.sizes" > "$work/regions.win.txt" 2>/dev/null
 win_rows=0
@@ -78,7 +83,7 @@ while IFS= read -r r; do
     win_rows=$(( win_rows + $(tabix "$matrix" "$r" | wc -l) ))
     tabix "$matrix" "$r" | cut -f1,2 >> "$work/win.keys"
 done < "$work/regions.win.txt"
-check "windowed regions cover every bin exactly once" "$win_rows" "400"
+check "windowed regions cover every bin exactly once" "$win_rows" "800"
 check "  and contain no duplicate bins" "$(sort "$work/win.keys" | uniq -d | wc -l | tr -d ' ')" "0"
 
 # The same sample listed twice must be refused before any pasting: it would
@@ -139,7 +144,8 @@ printf '1\t200000\n' > "$work/chrom.nochr.sizes"
 bash "$DSV_ROOT/scripts/regions.sh" --matrix "$matrix" --window 100000 --sizes "$work/chrom.nochr.sizes" \
      > "$work/regions.nochr.txt" 2>"$work/regions.nochr.err"
 check "regions accept the other contig naming convention" "$(grep -c . "$work/regions.nochr.txt")" "2"
-check "  and report a contig missing from the sizes file" "$(grep -c 'no entry' "$work/regions.nochr.err")" "1"
+check "  and report the contigs missing from the sizes file" \
+      "$(sed -n 's/.*WARNING: \([0-9]*\) contig(s).*/\1/p' "$work/regions.nochr.err")" "3"
 
 # A sample built against different intervals must be refused, not silently
 # pasted into the wrong coordinates.
@@ -243,6 +249,71 @@ else
     ok "NA coverage median refused"
 fi
 
+# The log2 ratio is floored: a zero-depth sample lands on the winsor value
+# (default -3), not on log2 of the depth floor, and the floor is a parameter.
+rowmin() { bgzip -dc "$1" | awk -F'\t' -v s="$2" '$2==s {m=""; for(i=5;i<=NF;i++) if(m==""||$i+0<m) m=$i+0; printf "%.2f", m}'; }
+bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverage "$cov" \
+    --region chr1 --out "$work/winsor" --ndim 0 --jobs 2 --chunk 100 >"$work/winsor.log" 2>&1 \
+  || bad_log "uncorrected chr1 failed" "$work/winsor.log"
+check "zero depth is floored at the default winsor" "$(rowmin "$work/winsor/corrected_ndim0.chr1.txt.gz" 99000)" "-3.00"
+bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverage "$cov" \
+    --region chr1 --out "$work/winsor10" --ndim 0 --jobs 2 --chunk 100 --winsor-log2 -10 >>"$work/winsor.log" 2>&1 \
+  || bad_log "--winsor-log2 run failed" "$work/winsor.log"
+check "  and --winsor-log2 moves the floor" "$(rowmin "$work/winsor10/corrected_ndim0.chr1.txt.gz" 99000)" "-10.00"
+
+# The ploidy model: with a sex table and the PAR, chrX outside the PAR is one
+# copy in males and chrY one copy in males and none in females. Without it,
+# every sex-chromosome bin is a sex indicator.
+for region in chrX chrY; do
+    bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverage "$cov" \
+        --region "$region" --out "$work/ploidy" --ndim 0 --jobs 2 --chunk 100 \
+        --sex "$pheno" --sex-col sex --par "$par" >"$work/ploidy.$region.log" 2>&1 \
+      || bad_log "ploidy correction failed on $region" "$work/ploidy.$region.log"
+done
+bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverage "$cov" \
+    --region chrX --out "$work/noploidy" --ndim 0 --jobs 2 --chunk 100 >"$work/noploidy.log" 2>&1 \
+  || bad_log "chrX correction without a sex table failed" "$work/noploidy.log"
+# 0/1 is refused as a sex coding: it is not the 1/2 convention and not M/F.
+awk -F'\t' 'BEGIN{OFS="\t"} NR==1{for(i=1;i<=NF;i++) if($i=="sex") c=i; print; next} {$c=($c=="M")?1:0; print}' "$pheno" > "$work/sex01.tsv"
+if bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverage "$cov" \
+        --region chrX --out "$work/sex01" --ndim 0 --sex "$work/sex01.tsv" --sex-col sex >/dev/null 2>&1; then
+    bad "a 0/1 sex coding was accepted"
+else
+    ok "a 0/1 sex coding is refused as ambiguous"
+fi
+Rscript - "$work" "$pheno" <<'RS' > "$work/ploidy.txt" 2>&1
+suppressPackageStartupMessages(library(data.table))
+a <- commandArgs(trailingOnly = TRUE); work <- a[1]
+ph <- fread(a[2]); male <- ph$SAMPLE[ph$sex == "M"]; female <- ph$SAMPLE[ph$sex == "F"]
+rd <- function(f) fread(cmd = paste("gzip -cd", shQuote(f)))
+row <- function(d, start) { r <- d[START == start]; v <- as.numeric(r[, -(1:4)]); names(v) <- names(d)[-(1:4)]; v }
+xp <- rd(file.path(work, "ploidy", "corrected_ndim0.chrX.txt.gz"))
+yp <- rd(file.path(work, "ploidy", "corrected_ndim0.chrY.txt.gz"))
+xn <- rd(file.path(work, "noploidy", "corrected_ndim0.chrX.txt.gz"))
+v <- row(xp, 100000); w <- row(xn, 100000); p <- row(xp, 5000)
+cat(sprintf("x_male_mean_ploidy=%.2f\n",   mean(v[male])))
+cat(sprintf("x_female_mean_ploidy=%.2f\n", mean(v[female])))
+cat(sprintf("x_male_mean_noploidy=%.2f\n", mean(w[male])))
+cat(sprintf("par_male_mean_ploidy=%.2f\n", mean(p[male])))
+cat(sprintf("y_female_all_na=%s\n", all(is.na(as.matrix(yp[, -(1:4)])[, female]))))
+cat(sprintf("y_male_none_na=%s\n", !anyNA(as.matrix(yp[, -(1:4)])[, male])))
+cat(sprintf("y_male_mean_ploidy=%.2f\n", mean(row(yp, 100000)[male])))
+RS
+pget() { awk -F= -v k="$1" '$1==k{print $2}' "$work/ploidy.txt"; }
+near0() { awk -v x="$1" 'BEGIN{exit !(x > -0.2 && x < 0.2)}'; }
+near0 "$(pget x_male_mean_ploidy)" && near0 "$(pget x_female_mean_ploidy)" \
+  && ok "ploidy model centres chrX for both sexes (M $(pget x_male_mean_ploidy), F $(pget x_female_mean_ploidy))" \
+  || bad "ploidy model left a sex offset on chrX (M $(pget x_male_mean_ploidy), F $(pget x_female_mean_ploidy))"
+awk -v x="$(pget x_male_mean_noploidy)" 'BEGIN{exit !(x < -0.8)}' \
+  && ok "  without a sex table, males sit one log2 unit low on chrX ($(pget x_male_mean_noploidy))" \
+  || bad "  chrX without a sex table should show males at about -1 (got $(pget x_male_mean_noploidy))"
+near0 "$(pget par_male_mean_ploidy)" && ok "  the PAR stays diploid in males ($(pget par_male_mean_ploidy))" \
+  || bad "  the PAR was treated as haploid in males ($(pget par_male_mean_ploidy))"
+check "  chrY is missing in every female" "$(pget y_female_all_na)" "TRUE"
+check "  and present in every male"       "$(pget y_male_none_na)"  "TRUE"
+near0 "$(pget y_male_mean_ploidy)" && ok "  chrY is centred in males ($(pget y_male_mean_ploidy))" \
+  || bad "  chrY is not centred in males ($(pget y_male_mean_ploidy))"
+
 # --- analyze ---------------------------------------------------------------
 echo "[4/6] analyze"
 # Use the shipped example rather than a copy, so a mistake in the documented
@@ -256,10 +327,38 @@ for region in chr1 chr2; do
         --region "$region" --out "$work/assoc" --jobs 2 --chunk 100 \
         -- --minObs 30 >"$work/analyze.$region.log" 2>&1 || bad_log "analyze failed on $region" "$work/analyze.$region.log"
 done
-ok "association ran for 6 phenotypes x 2 regions"
-check "output files" "$(ls "$work/assoc"/*.txt.gz 2>/dev/null | wc -l | tr -d ' ')" "12"
-check "coxph produced results" \
-      "$(bgzip -dc "$work/assoc/survival.coxph.chr1.txt.gz" | grep -cv '^#')" "200"
+ok "association ran for 7 phenotypes x 2 regions"
+check "output files" "$(ls "$work/assoc"/*.txt.gz 2>/dev/null | wc -l | tr -d ' ')" "14"
+check "coxph produced results (all but the single-sample region)" \
+      "$(bgzip -dc "$work/assoc/survival.coxph.chr1.txt.gz" | grep -cv '^#')" "199"
+
+# A region with missing samples (chrY in females) is fitted on the samples
+# that have it, for every method; nothing is imputed.
+bash "$DSV_ROOT/scripts/analyze.sh" --corrected "$work/ploidy/corrected_ndim0.chrY.txt.gz" \
+    --pheno "$pheno" --model "quant_trait~cov_resids+age+sex" --region chrY --out "$work/assocY" \
+    --jobs 2 --chunk 100 -- --minObs 15 >"$work/assocY.log" 2>&1 || bad_log "chrY linear analysis failed" "$work/assocY.log"
+bash "$DSV_ROOT/scripts/analyze.sh" --corrected "$work/ploidy/corrected_ndim0.chrY.txt.gz" \
+    --pheno "$pheno" --model "case_status~cov_resids+age" --method logistic --min-cases 3 --region chrY \
+    --out "$work/assocY" --jobs 2 --chunk 100 -- --minObs 15 >>"$work/assocY.log" 2>&1 || bad_log "chrY logistic analysis failed" "$work/assocY.log"
+check "chrY linear rows are fitted on the males only" \
+      "$(bgzip -dc "$work/assocY/quant_trait.linear.chrY.txt.gz" | awk -F'\t' '!/^#/ && $5!='"$n_male"'{bad=1} END{print bad?"no":"yes"}')" "yes"
+check "  every chrY region is reported" "$(bgzip -dc "$work/assocY/quant_trait.linear.chrY.txt.gz" | grep -cv '^#')" "200"
+check "  chrY logistic rows too" \
+      "$(bgzip -dc "$work/assocY/case_status.logistic.chrY.txt.gz" | awk -F'\t' '!/^#/ && $5!='"$n_male"'{bad=1} END{print bad?"no":"yes"}')" "yes"
+
+# A region whose residual depth is carried by one sample is a test of one
+# participant and is skipped by default; --max-share 1 keeps it and reports
+# the share.
+check "single-sample outlier region is skipped by default" \
+      "$(bgzip -dc "$work/assoc/quant_trait.linear.chr1.txt.gz" | awk -F'\t' '$2==119000' | wc -l | tr -d ' ')" "0"
+bash "$DSV_ROOT/scripts/analyze.sh" --corrected "$work/corrected/corrected_ndim4.chr1.txt.gz" \
+    --pheno "$pheno" --pcs "$pcs" --model "quant_trait~cov_resids+age" --name quant_all --max-share 1 \
+    --region chr1 --out "$work/share" --jobs 2 --chunk 100 -- --minObs 30 >"$work/share.log" 2>&1 \
+  || bad_log "--max-share 1 run failed" "$work/share.log"
+share="$(bgzip -dc "$work/share/quant_all.linear.chr1.txt.gz" | awk -F'\t' '$2==119000{print $NF}')"
+awk -v s="$share" 'BEGIN{exit !(s > 0.5 && s <= 1)}' \
+  && ok "  --max-share 1 keeps it and reports MAXSHARE=$share" \
+  || bad "  --max-share 1 did not report the outlier region's share (got '$share')"
 
 # --- assertions on the numbers ---------------------------------------------
 echo "[5/6] results"
@@ -271,6 +370,7 @@ rd <- function(p) rbindlist(lapply(Sys.glob(file.path(work, "assoc", p)),
         function(f) fread(cmd = paste("gzip -cd", shQuote(f)))))
 
 q  <- rd("quant_trait.linear.chr*.txt.gz")
+qi <- rd("quant_trait_int.linear.chr*.txt.gz")
 n  <- rd("null_trait.linear.chr*.txt.gz")
 pn <- rd("pc_null.linear.chr*.txt.gz")
 b  <- rd("case_status.logistic.chr*.txt.gz")
@@ -316,11 +416,26 @@ cref <- coef(summary(cfit))["cov_resids", ]
 cgot <- cx[Region == truth$Region[1]]
 cat(sprintf("cox_beta_matches_coxph=%s\n", abs(cgot$BETA - cref[1]) < 1e-5 * abs(cref[1])))
 cat(sprintf("cox_z_matches_coxph=%s\n", abs(cgot$STAT - cref[4]) < 1e-5 * abs(cref[4])))
+
+# The manifest's rank-int,robust row: the estimate is lm() on the
+# inverse-normal-transformed response and the SE is HC1.
+d[, y_int := qnorm((rank(quant_trait, ties.method = "average") - 0.5) / .N)]
+fi <- lm(y_int ~ cov_resids + age + sex + ancestry_PC1 + ancestry_PC2 + PC1 + PC2 + PC3 + PC4, data = d)
+xr <- resid(lm(cov_resids ~ age + sex + ancestry_PC1 + ancestry_PC2 + PC1 + PC2 + PC3 + PC4, data = d))
+e  <- resid(fi); nn <- nrow(d); dfr <- fi$df.residual
+se_hc1 <- sqrt(sum(xr^2 * e^2) / sum(xr^2)^2 * nn / dfr)
+gi <- qi[Region == truth$Region[1]]
+cat(sprintf("rankint_beta_matches_lm=%s\n", abs(gi$BETA - coef(fi)["cov_resids"]) < 1e-6 * abs(coef(fi)["cov_resids"])))
+cat(sprintf("robust_se_matches_hc1=%s\n", abs(gi$SE - se_hc1) < 1e-6 * se_hc1))
+cat(sprintf("maxshare_reported=%s\n", all(is.finite(q$MAXSHARE)) && all(q$MAXSHARE > 0 & q$MAXSHARE <= 0.5)))
 RS
 get() { awk -F= -v k="$1" '$1==k{print $2}' "$work/assert.txt"; }
 
-check "all regions tested"            "$(get regions_tested)"           "400"
+check "all regions but the single-sample one tested" "$(get regions_tested)" "399"
 check "injected signal is the top hit" "$(get signal_is_top_hit)"        "TRUE"
+check "rank-int row equals lm() on the transformed response" "$(get rankint_beta_matches_lm)" "TRUE"
+check "robust row's SE equals HC1"     "$(get robust_se_matches_hc1)"    "TRUE"
+check "MAXSHARE reported and within the filter" "$(get maxshare_reported)" "TRUE"
 check "injected deletion has a negative effect" "$(get signal_direction_negative)" "TRUE"
 check "linear estimate equals lm() with the PCs in the model" "$(get linear_beta_matches_lm)" "TRUE"
 check "linear t equals lm()"           "$(get linear_t_matches_lm)"      "TRUE"
@@ -435,7 +550,7 @@ gzip -c "$pheno" > "$work/pheno.tsv.gz"
 if bgzip -dc "$work/corrected/corrected_ndim4.chr1.txt.gz" \
      | Rscript "$DSV_ROOT/R/analyze.R" -f - -p "$work/pheno.tsv.gz" \
          -m 'quant_trait~cov_resids+age' -r linear --minObs 30 --pcs "$pcs" --ndim 4 \
-         > "$work/gz.txt" 2>/dev/null && [ "$(grep -cv '^#' "$work/gz.txt")" -eq 200 ]; then
+         > "$work/gz.txt" 2>/dev/null && [ "$(grep -cv '^#' "$work/gz.txt")" -eq 199 ]; then
     ok "gzipped phenotype table is read without R.utils"
 else
     bad "gzipped phenotype table failed"

@@ -4,16 +4,20 @@
 #
 #   scripts/analyze.sh --corrected FILE --pheno FILE --model FORMULA \
 #                      --method linear|logistic|coxph \
-#                      --region chr1[:start-end] --out DIR
+#                      --region chr1[:start-end] --out DIR \
+#                      [--pcs FILE] [--ndim K] [--case-level L] [--min-cases N] \
+#                      [--max-share X] [--rank-int] [--robust]
 #
 # This replaces the three near-identical wrappers that differed only by their
 # regression method and their defaults. Everything site-specific belongs in an
 # env file (see conf/example.env), not here.
 #
 # Phenotype sweeps: pass --pheno-manifest instead of --model/--method to run a
-# tab-separated table of `name<TAB>method<TAB>model` rows against the same
-# region. Each row writes its own output and is skipped if already complete, so
-# adding a phenotype is a line in a file and a re-run costs only the new work.
+# tab-separated table of `name<TAB>method<TAB>model[<TAB>flags]` rows against
+# the same region; flags are comma-separated `rank-int` and/or `robust`. Each
+# row writes its own output and is skipped if already complete for the same
+# inputs, so adding a phenotype is a line in a file and a re-run costs only
+# the new work.
 # ---------------------------------------------------------------------------
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
@@ -24,6 +28,7 @@ out_dir="${DSV_RESULTS_DIR:-}"; manifest="${DSV_PHENO_MANIFEST:-}"; name=""
 jobs="${DSV_JOBS:-4}"; chunk="${DSV_CHUNK:-2000}"; threads="${DSV_THREADS:-2}"
 min_obs="${DSV_MIN_OBS:-}"; min_var="${DSV_MIN_VARIANCE:-}"
 pcs="${DSV_PCS:-}"; ndim=""; case_level=""; min_cases="${DSV_MIN_CASES:-}"
+max_share="${DSV_MAX_SHARE:-}"; rank_int=0; robust=0
 force=0; extra=(); model_flag=0; manifest_flag=0
 
 while [ $# -gt 0 ]; do
@@ -40,6 +45,9 @@ while [ $# -gt 0 ]; do
         --ndim)           ndim="$2";      shift 2 ;;
         --case-level)     case_level="$2"; shift 2 ;;
         --min-cases)      min_cases="$2"; shift 2 ;;
+        --max-share)      max_share="$2"; shift 2 ;;
+        --rank-int)       rank_int=1;     shift ;;
+        --robust)         robust=1;       shift ;;
         --jobs)           jobs="$2";      shift 2 ;;
         --chunk)          chunk="$2";     shift 2 ;;
         --threads)        threads="$2";   shift 2 ;;
@@ -81,8 +89,11 @@ fi
 front=(--minObs "${min_obs:-100}")
 [ -z "$min_var" ]    || front+=(--minVariance "$min_var")
 [ -z "$min_cases" ]  || front+=(--minCases "$min_cases")
+[ -z "$max_share" ]  || front+=(--maxShare "$max_share")
 [ -z "$case_level" ] || front+=(--caseLevel "$case_level")
 [ "$ndim" -eq 0 ]    || front+=(--pcs "$pcs" --ndim "$ndim")
+[ "$robust" -eq 0 ]  || front+=(--robust)
+[ "$rank_int" -eq 0 ] || front+=(--rankInt)
 extra=(${front[@]+"${front[@]}"} ${extra[@]+"${extra[@]}"})
 
 rscript="${DSV_ANALYZE_R:-$DSV_ROOT/R/analyze.R}"
@@ -112,18 +123,34 @@ set -o pipefail
 chunk="$(dsv_chunk_lines "$probe_row" "$chunk")"
 
 # --- one phenotype ---------------------------------------------------------
+# Passthrough args are re-quoted with %q inside run_one because the worker
+# command is a string a worker shell parses; interpolating them raw broke any
+# argument containing shell metacharacters (every realistic --sampleIdPattern).
 
-# Passthrough args are re-quoted with %q because the worker command below is a
-# string a worker shell parses; interpolating them raw broke any argument
-# containing shell metacharacters (every realistic --sampleIdPattern).
-extra_q=""
-[ ${#extra[@]} -eq 0 ] || extra_q="$(printf '%q ' "${extra[@]}")"
+# Per-analysis flags from a manifest's optional fourth column, comma-separated:
+#   rank-int   rank-based inverse-normal transform of the response (linear)
+#   robust     heteroskedasticity-robust SE (linear), robust variance (coxph)
+row_flags() {                      # row_flags <flags> -> R arguments on stdout, one per line
+    local f
+    for f in $(printf '%s' "$1" | tr ',' ' '); do
+        case "$f" in
+            rank-int) echo "--rankInt" ;;
+            robust)   echo "--robust" ;;
+            '')       ;;
+            *)        dsv_die "unknown analysis flag '$f' (known: rank-int, robust)" ;;
+        esac
+    done
+}
 
-run_one() {                        # run_one <name> <method> <model> [defaulted_name]
-    local name="$1" meth="$2" form="$3" defaulted="${4:-0}"
+run_one() {                        # run_one <name> <method> <model> [defaulted_name] [flags]
+    local name="$1" meth="$2" form="$3" defaulted="${4:-0}" flags="${5:-}"
     local final="$out_dir/${name}.${meth}.${slug}.txt.gz"
     local log="$out_dir/${name}.${meth}.${slug}.log"
-    local sig params
+    local sig params rowargs=()
+    while IFS= read -r a; do [ -z "$a" ] || rowargs+=("$a"); done <<< "$(row_flags "$flags")"
+    local extra=(${extra[@]+"${extra[@]}"} ${rowargs[@]+"${rowargs[@]}"})
+    local extra_q=""
+    [ ${#extra[@]} -eq 0 ] || extra_q="$(printf '%q ' "${extra[@]}")"
 
     # Everything the result depends on but the filename does not carry.
     sig="$(printf 'stage=analyze\ncorrected=%s\npheno=%s\npcs=%s\nndim=%s\nregion=%s\nmethod=%s\nmodel=%s\nextra=%s\nscript=%s\nrscript=%s' \
@@ -201,11 +228,12 @@ if [ -n "$manifest" ]; then
         name="$(printf '%s' "$line" | cut -f1)"
         meth="$(printf '%s' "$line" | cut -f2)"
         form="$(printf '%s' "$line" | cut -f3)"
+        flags="$(printf '%s\t' "$line" | cut -f4)"
         [ -n "$name" ] || dsv_die "manifest row has an empty name: $line"
-        [ -n "$meth" ] || dsv_die "manifest row '$name' is missing a method (expected name<TAB>method<TAB>model)"
+        [ -n "$meth" ] || dsv_die "manifest row '$name' is missing a method (expected name<TAB>method<TAB>model[<TAB>flags])"
         [ -n "$form" ] || dsv_die "manifest row '$name' is missing a model formula"
         n=$((n+1))
-        run_one "$name" "$meth" "$form"
+        run_one "$name" "$meth" "$form" 0 "$flags"
     done 3< "$manifest"
     dsv_log "manifest complete: $n phenotypes over $region"
 else

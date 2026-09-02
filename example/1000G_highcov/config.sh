@@ -192,6 +192,16 @@ if [ "${EX_SMOKE}" = "1" ]; then
 else
     EX_MIN_OBS="${EX_MIN_OBS:-100}"
 fi
+# A region where one sample carries more than this share of the residual
+# depth is a test of one participant and is skipped.
+EX_MAX_SHARE="${EX_MAX_SHARE:-0.5}"
+
+# The ploidy model for chrX/chrY (EX_PLOIDY=0 turns it off, and every
+# sex-chromosome bin becomes a sex indicator again), the pseudo-autosomal
+# BED for the build, and the floor on the log2 ratio.
+EX_PLOIDY="${EX_PLOIDY:-1}"
+EX_PAR="${EX_PAR:-$EX_EXAMPLE_DIR/../../conf/par.grch38.bed}"
+EX_WINSOR_LOG2="${EX_WINSOR_LOG2:--3}"
 
 # Seed for the permuted null phenotype (MTDNA_CN_NULL).
 EX_PHENO_SEED="${EX_PHENO_SEED:-20260818}"

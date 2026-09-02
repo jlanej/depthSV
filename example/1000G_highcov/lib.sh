@@ -153,8 +153,20 @@ ex_export_dsv_env() {              # ex_export_dsv_env <mode>
 
     export DSV_NDIM="$EX_NDIM"
     export DSV_MIN_OBS="$EX_MIN_OBS"
+    export DSV_MAX_SHARE="$EX_MAX_SHARE"
+    export DSV_WINSOR_LOG2="$EX_WINSOR_LOG2"
     export DSV_JOBS="$EX_JOBS"
     export DSV_THREADS="$EX_THREADS"
+
+    # The ploidy model reads the inferred sex the phenotype table carries as
+    # M/F; the PAR BED comes from the depthSV checkout.
+    if [ "$EX_PLOIDY" = "1" ]; then
+        export DSV_SEX="$in/phenotypes.tsv"
+        export DSV_SEX_COL="SEX_MF"
+        export DSV_PAR="$EX_PAR"
+    else
+        unset DSV_SEX DSV_SEX_COL DSV_PAR
+    fi
 }
 
 # --- timing ----------------------------------------------------------------

@@ -34,9 +34,9 @@ opt <- parse_args(OptionParser(option_list = option_list))
 for (req in c("qc", "out")) if (is.null(opt[[req]])) stop("--", req, " is required", call. = FALSE)
 
 needed <- c("SAMPLE_ID", "HQ_MEDIAN_COV", "X_COV_RATIO", "Y_COV_RATIO",
-            "MITO_COV_RATIO", "MEAN_AUTOSOMAL_COV")
+            "MITO_COV_RATIO", "MEAN_AUTOSOMAL_COV", "INFERRED_SEX")
 qc <- fread(opt$qc, select = needed)
-qc <- qc[complete.cases(qc) & HQ_MEDIAN_COV > 0]
+qc <- qc[complete.cases(qc) & HQ_MEDIAN_COV > 0 & INFERRED_SEX %in% c("M", "F")]
 if (!nrow(qc)) stop("no usable rows in ", opt$qc, call. = FALSE)
 if (nrow(qc) < opt$samples) {
   message(sprintf("[warn] only %d usable samples (requested %d)", nrow(qc), opt$samples))
@@ -71,10 +71,15 @@ auto_rows <- regions$CHR == "chr20"
 x_rows    <- regions$CHR == "chrX"
 y_rows    <- regions$CHR == "chrY"
 m_rows    <- regions$CHR == "chrM"
+# The sex chromosomes follow the inferred sex exactly — males at half the
+# autosomal median on X and Y, females at the median on X and ~1% on Y —
+# rather than the observed X/Y ratios, so the ploidy model is exact on this
+# tree and any sex signal left on chrX after correction is a wiring fault.
+male <- as.character(qc$INFERRED_SEX) == "M"
 for (j in seq_len(n)) {
   target[auto_rows, j] <- qc$HQ_MEDIAN_COV[j]
-  target[x_rows,    j] <- qc$HQ_MEDIAN_COV[j] * qc$X_COV_RATIO[j]
-  target[y_rows,    j] <- qc$HQ_MEDIAN_COV[j] * qc$Y_COV_RATIO[j]
+  target[x_rows,    j] <- qc$HQ_MEDIAN_COV[j] * if (male[j]) 0.5 else 1.0
+  target[y_rows,    j] <- qc$HQ_MEDIAN_COV[j] * if (male[j]) 0.5 else 0.01
   target[m_rows,    j] <- qc$MEAN_AUTOSOMAL_COV[j] * qc$MITO_COV_RATIO[j]
 }
 

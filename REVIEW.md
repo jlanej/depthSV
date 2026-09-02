@@ -700,3 +700,32 @@ in the order below.
    to it; streaming/`localization_optional` plus the `tabix -H` / token
    changes; the block-join WDL; runtime attributes; release tag, version
    stamp in headers, `CITATION.cff` authors, benchmark reproducers.
+
+## 10. Status
+
+Where each finding stands, by commit on the `review-2026-09` branch. "PR3"
+is the coding-and-QC commit that carries this section.
+
+| Finding | Status | Where |
+|---|---|---|
+| §1.1 PCs into the association model | fixed | `beaf00d` (PR1): `--pcs`/`--ndim` on the analysis stage, refusal without them, PC-null λ assertion |
+| §1.2 Sex-chromosome ploidy | fixed | PR3: `--sex`/`--sex-col`/`--par` on the correction, `conf/par.grch3[78].bed`, chrY fitted on males only, example runs with it and checks that chrX carries no sex signal |
+| §1.3 Floor coding / single-sample leverage | fixed | PR3: log2 winsorised at `--winsor-log2` (−3), `MAXSHARE` on every row, `--max-share` (0.5) skip |
+| §1.4 Cox numerics | fixed | PR1: `coxph()` reference assertion; PR3: the floor and leverage filter above, `--robust` |
+| §1.5 Effective number of tests, threshold | open | PR4 |
+| §1.6 Relatedness | open | PR4 (structured null, unrelated-set sweep); `--robust` and `rank-int` landed in PR3 but are not a fix |
+| §1.7 Marchenko–Pastur ndim | partly | `dc3a42c` corrected the stated justification; validation against the SV callset is PR4 |
+| §1.8 Logistic separation | fixed | PR1: `LRT_P`, `CONVERGED`, null deviance once |
+| §1.9 Smaller | partly | `--min-cases`, `LOG10P`, explicit binary coding (PR1); rank-INT, robust SEs, no mean imputation (PR3); the rest open |
+| §2.1 Stats merge at ≥ 10 chunks | fixed | `dc3a42c` stopgap, `beaf00d` sorted merge + ten-chunk test |
+| §2.2 Duplicate `SAMPLE` rows | fixed | `beaf00d`: refused in every table and in the matrix header |
+| §2.3 August findings (markers, `tail`, parity, empty shards, manifest check, modules, `DSV_ROOT`) | fixed | `42f2823` (PR2): parameter-aware `.params` signatures with `--force`, row parity, empty-shard refusal, manifest-content check, module order, spool-safe `DSV_ROOT` |
+| §2.4 New, smaller | fixed | `42f2823` |
+| §3.1 Join at biobank scale | open | PR5 / later: tile-parallel and block join |
+| §3.2 CPU overhead in correct/analyze | partly | PR1/PR2: basis computed once per unit, block projection, numeric `fread`, `select=`; process restarts and text parsing remain |
+| §3.3 Logistic cost | open | score test not implemented |
+| §3.4 Region parsed once per phenotype | open | |
+| §3.5 Text storage | open | |
+| §4 Deployment | partly | PR3: WDL carries the ploidy, winsor and leverage inputs; image publish, streaming localisation, runtime attributes are PR5 |
+| §5 Example and preamble | fixed / partly | `42f2823`: lock ownership, `.selected_modes`, run.env, provenance; PR3: ploidy wiring, INT rows, new sex-table checks; the unrelated-set sweep and SV-callset validation are PR4 |
+| §6 Hygiene | partly | credit and review docs landed; version stamp, `CITATION.cff` authors, release tag are PR5 |

@@ -92,25 +92,33 @@ for mode in $EX_MODES; do
         [ "$adj_nosex" = "+" ] && adj_nosex=""
     fi
     {
-        printf '# depthSV 1000G example analyses. Format: name<TAB>method<TAB>model\n'
+        printf '# depthSV 1000G example analyses. Format: name<TAB>method<TAB>model[<TAB>flags]\n'
         printf '# The depth term must be named cov_resids (see conf/phenotypes.example.tsv).\n'
         printf '#\n'
-        printf '# SEX appears twice on purpose. The linear run carries the truth check:\n'
-        printf '# sex separates depth on chrX/Y so completely that the logistic Wald z\n'
-        printf '# collapses there (Hauck-Donner), so the logistic run exercises that\n'
-        printf '# engine and documents the collapse rather than asserting rank.\n'
+        printf '# The *_int rows test the inverse-normal-transformed phenotype with robust\n'
+        printf '# SEs: MTDNA_CN is right-skewed, and the untransformed rows keep the\n'
+        printf '# effect-size truth check (slope ~1 on chrM for the log2 phenotype).\n'
+        printf '#\n'
+        printf '# SEX appears twice on purpose. Under the ploidy model chrX is normalised\n'
+        printf '# by its expected copies, so a sex signal left on chrX means the sex table\n'
+        printf '# is misaligned: the linear run carries that check. The logistic run\n'
+        printf '# exercises that engine on the same response.\n'
         if [ -n "$adj" ]; then
             printf '# Covariates from the preamble: %s (EX_COVARIATES).\n' "$EX_COVARIATES"
             printf 'mtdna_cn\tlinear\tMTDNA_CN~cov_resids\n'
             printf 'mtdna_cn_adj\tlinear\tMTDNA_CN~cov_resids%s\n' "$adj"
+            printf 'mtdna_cn_int_adj\tlinear\tMTDNA_CN~cov_resids%s\trank-int,robust\n' "$adj"
             printf 'log2_mtdna_cn_adj\tlinear\tLOG2_MTDNA_CN~cov_resids%s\n' "$adj"
             printf 'mtdna_cn_null_adj\tlinear\tMTDNA_CN_NULL~cov_resids%s\n' "$adj"
+            printf 'mtdna_cn_null_int_adj\tlinear\tMTDNA_CN_NULL~cov_resids%s\trank-int,robust\n' "$adj"
             printf 'sex_linear_adj\tlinear\tSEX~cov_resids%s\n' "$adj_nosex"
             printf 'inferred_sex\tlogistic\tSEX~cov_resids\n'
         else
             printf 'mtdna_cn\tlinear\tMTDNA_CN~cov_resids\n'
+            printf 'mtdna_cn_int\tlinear\tMTDNA_CN~cov_resids\trank-int,robust\n'
             printf 'log2_mtdna_cn\tlinear\tLOG2_MTDNA_CN~cov_resids\n'
             printf 'mtdna_cn_null\tlinear\tMTDNA_CN_NULL~cov_resids\n'
+            printf 'mtdna_cn_null_int\tlinear\tMTDNA_CN_NULL~cov_resids\trank-int,robust\n'
             printf 'sex_linear\tlinear\tSEX~cov_resids\n'
             printf 'inferred_sex\tlogistic\tSEX~cov_resids\n'
         fi

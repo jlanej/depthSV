@@ -32,9 +32,10 @@ callset:
 |---|---|---|
 | `mtdna_cn` (linear) | `MTDNA_CN` = 2 × chrM mean / HQ autosomal median | chrM bins must dominate the association; top autosomal hits are NUMT candidates, reported for inspection |
 | `log2_mtdna_cn` (linear) | log₂ of the above | on a chrM bin the corrected depth *is* log₂(chrM/median), so the slope should sit near 1 — an effect-size check, not just a rank check |
-| `sex_linear` (linear) | `SEX` from X/Y coverage ratios | chrX/chrY bins must dominate |
-| `inferred_sex` (logistic) | same `SEX`, through the logistic engine | runs to completion; *documents* that the Wald z collapses on the sex chromosomes under complete separation (Hauck–Donner) — which is why the rank assertion lives on the linear run |
-| `mtdna_cn_null` (linear) | `MTDNA_CN` permuted with a fixed seed | genomic-control λ near 1; ~5% of regions at p<0.05 |
+| `mtdna_cn_int` (linear, `rank-int,robust`) | `MTDNA_CN` inverse-normal transformed | the same chrM truth on the transformed phenotype with robust SEs — the model a skewed trait would be published with |
+| `sex_linear` (linear) | `SEX` from X/Y coverage ratios | the correction runs with the ploidy model (chrX normalised by expected copies, chrY fitted on males only), so corrected chrX depth must explain *little* of `SEX`: median R² < 0.15; a misaligned sex table gives ≈ 0.5. N on chrY must equal the male count |
+| `inferred_sex` (logistic) | same `SEX`, through the logistic engine | runs to completion; median z on chrX/Y reported |
+| `mtdna_cn_null` / `mtdna_cn_null_int` (linear) | `MTDNA_CN` permuted with a fixed seed | genomic-control λ near 1; ~5% of regions at p<0.05 |
 
 Because phenotype, coverage medians and PCs all come from the *same
 upstream run per mode*, the comparison between modes is a genuine
@@ -257,13 +258,19 @@ the pipeline output.
 - **`chrM_log2_slope` (WARN)** — the `log2_mtdna_cn` estimate at the best
   chrM bin should sit near 1 (band 0.5–1.5). Catches scale errors that a
   rank check cannot.
-- **`sex_top_hit` (FAIL) / `sex_top100_purity` (WARN)** — `sex_linear`
-  must put chrX/chrY on top, and ≥90% of its top 100.
-- **`wald_separation_note` (INFO)** — on the logistic run, small
-  sex-chromosome z alongside a dominant linear t is the Hauck–Donner
-  collapse under complete separation, recorded so nobody mistakes it for a
-  miss. (It is also a live argument for the score/external-engine path on
-  saturated binary traits.)
+- **`sex_signal_removed` (FAIL/WARN)** — with the ploidy model on
+  (`EX_PLOIDY=1`, the default), `sex_linear`'s t on each chrX bin converts
+  to the R² of `SEX` on corrected chrX depth (t²/(t²+df)); the median over
+  chrX must stay below 0.15 (WARN) / 0.35 (FAIL). A misaligned sex table
+  gives ≈ 0.5 on every bin. With `EX_PLOIDY=0` the old assertion applies
+  instead: chrX/chrY on top (`sex_top_hit`).
+- **`chrY_tested_in_males` (FAIL)** — chrY regions are fitted on the
+  samples with an expected copy, so `N` there must equal the number of
+  males in the sex table (checked on `mtdna_cn`).
+- **`logistic_sex_note` (INFO)** — on the logistic run, the median z on
+  chrX/Y beside the autosomes. Without the ploidy model the sexes are
+  completely separated there and the Wald z collapses (Hauck–Donner); with
+  it the sex chromosomes should look like autosomes.
 - **`null_lambda` / `null_frac_p05` (WARN)** — the permuted phenotype must
   stay calibrated (λ band 0.85–1.20 on real data), judged on autosomal
   bins: every chrX/Y bin carries the same sex vector, so those tests are one
@@ -332,6 +339,9 @@ that matter most:
 | `EX_NDIM` | `preamble/ndim.txt`, else 20 | PCs removed by the correction; the preamble's MP count when it ran, an explicit value always wins |
 | `EX_MP_MARGIN` | 0.01 | relative margin above the MP edge for the PC counts (coverage and genotype) |
 | `EX_N_GPCS` / `EX_COVARIATES` | 10 / `SEX+GPC1..GPC10` when covariates exist, else `none` | covariate terms of the adjusted models |
+| `EX_PLOIDY` / `EX_PAR` | 1 / `conf/par.grch38.bed` | ploidy model for chrX/chrY from the inferred sex; 0 turns it off |
+| `EX_WINSOR_LOG2` | −3 | floor on the log2 ratio before correction |
+| `EX_MAX_SHARE` | 0.5 | skip a region where one sample carries more than this share of the residual depth |
 | `EX_GENO_CHROMS` | 1–22 (22 only in smoke) | chromosomes the genotype PCA uses |
 | `EX_PREAMBLE_MODULES` | `plink2` | modules loaded before plink2, where `module` exists |
 | `EX_WINDOW` | 10000000 | work-unit size in bp (~310 units over chr1–22,X,Y,M, ~150 s each at 3,202 samples); 0 = per contig |

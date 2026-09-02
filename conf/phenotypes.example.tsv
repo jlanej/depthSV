@@ -1,10 +1,12 @@
 # depthSV phenotype manifest
 #
-# One row per analysis. Tab-separated, three columns:
+# One row per analysis. Tab-separated, three columns plus an optional fourth:
 #
 #   name    a short label used in the output filename
 #   method  linear | logistic | coxph
 #   model   an R formula; the depth term must be named cov_resids
+#   flags   optional, comma-separated: rank-int (inverse-normal transform of a
+#           quantitative response) and/or robust (HC1 / robust variance)
 #
 # The coverage PCs the correction removed are appended to every model by the
 # analysis stage (--pcs/--ndim); they need not be written here.
@@ -14,12 +16,14 @@
 # than guessed, because guessing once reversed effect directions.
 #
 # Adding a phenotype is a row here. Re-running skips analyses that already
-# completed, so a sweep can be extended without repeating finished work.
+# completed for the same inputs, so a sweep can be extended without repeating
+# finished work.
 #
 # Column names must exist in the phenotype table passed as --pheno.
 #
-#name	method	model
+#name	method	model	flags
 quant_trait	linear	quant_trait~cov_resids+age+sex+ancestry_PC1+ancestry_PC2
+quant_trait_int	linear	quant_trait~cov_resids+age+sex+ancestry_PC1+ancestry_PC2	rank-int,robust
 null_trait	linear	null_trait~cov_resids+age+sex+ancestry_PC1+ancestry_PC2
 pc_null	linear	pc_null~cov_resids+age+sex
 case_status	logistic	case_status~cov_resids+age+sex+ancestry_PC1+ancestry_PC2

@@ -49,7 +49,8 @@ for mode in $modes; do
         Rscript "$EX_EXAMPLE_DIR/R/evaluate.R" \
             --assoc "$assoc" --analyses "$in_dir/analyses.tsv" \
             --mode "$mode" --profile "$EX_EVAL_PROFILE" --out "$out" \
-            --source "${EX_M_SOURCE:-unknown}" \
+            --source "${EX_M_SOURCE:-unknown}" --pheno "$in_dir/phenotypes.tsv" \
+            --samples "$in_dir/samples.txt" --ploidy "$EX_PLOIDY" \
             ${regions_opt[@]+"${regions_opt[@]}"} \
         || rc=1
 done

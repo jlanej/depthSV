@@ -3,12 +3,19 @@
 # depthSV — normalise and correct one region of the depth matrix
 #
 #   scripts/correct.sh --matrix FILE --pcs FILE --coverage FILE \
-#                      --region chr1[:start-end] --out DIR [--ndim N]
+#                      --region chr1[:start-end] --out DIR [--ndim N] \
+#                      [--sex FILE [--sex-col NAME]] [--par BED] [--winsor-log2 X]
 #
 # The unit of work is a region, not a chromosome. That is what lets the same
 # script be driven by a SLURM array, a WDL scatter or a CSV fan-out without any
 # of them knowing about the others, and it is what makes a preempted job cheap
 # to retry.
+#
+# --sex (with --par for the pseudo-autosomal regions; conf/par.grch38.bed)
+# turns on the ploidy model: chrX outside the PARs is one copy in males,
+# chrY one copy in males and none in females. Without it every sex-chromosome
+# region is a sex indicator. --winsor-log2 floors the log2 ratio (default -3)
+# so a zero-depth sample cannot carry a region's whole leverage.
 #
 # Input regions are read through the tabix index rather than by scanning, so
 # this reads only what it needs.
@@ -21,27 +28,42 @@ matrix="${DSV_MATRIX:-}"; pcs="${DSV_PCS:-}"; coverage="${DSV_COVERAGE:-}"
 region=""; out_dir="${DSV_CORRECTED_DIR:-}"
 ndim="${DSV_NDIM:-16}"; jobs="${DSV_JOBS:-4}"; chunk="${DSV_CHUNK:-2000}"
 threads="${DSV_THREADS:-2}"; force=0; extra=()
+sex="${DSV_SEX:-}"; sex_col="${DSV_SEX_COL:-SEX}"; par="${DSV_PAR:-}"; winsor="${DSV_WINSOR_LOG2:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --matrix)   matrix="$2";   shift 2 ;;
-        --pcs)      pcs="$2";      shift 2 ;;
-        --coverage) coverage="$2"; shift 2 ;;
-        --region)   region="$2";   shift 2 ;;
-        --out)      out_dir="$2";  shift 2 ;;
-        --ndim)     ndim="$2";     shift 2 ;;
-        --jobs)     jobs="$2";     shift 2 ;;
-        --chunk)    chunk="$2";    shift 2 ;;
-        --threads)  threads="$2";  shift 2 ;;
-        --force)    force=1;       shift ;;
-        --)         shift; extra=("$@"); break ;;
-        -h|--help)  dsv_usage ;;
-        *)          dsv_die "unknown argument: $1" ;;
+        --matrix)      matrix="$2";   shift 2 ;;
+        --pcs)         pcs="$2";      shift 2 ;;
+        --coverage)    coverage="$2"; shift 2 ;;
+        --region)      region="$2";   shift 2 ;;
+        --out)         out_dir="$2";  shift 2 ;;
+        --ndim)        ndim="$2";     shift 2 ;;
+        --sex)         sex="$2";      shift 2 ;;
+        --sex-col)     sex_col="$2";  shift 2 ;;
+        --par)         par="$2";      shift 2 ;;
+        --winsor-log2) winsor="$2";   shift 2 ;;
+        --jobs)        jobs="$2";     shift 2 ;;
+        --chunk)       chunk="$2";    shift 2 ;;
+        --threads)     threads="$2";  shift 2 ;;
+        --force)       force=1;       shift ;;
+        --)            shift; extra=("$@"); break ;;
+        -h|--help)     dsv_usage ;;
+        *)             dsv_die "unknown argument: $1" ;;
     esac
 done
 
 dsv_require_opt matrix pcs coverage region out_dir
 dsv_require_file "$matrix" "$pcs" "$coverage"
+[ -z "$sex" ] || dsv_require_file "$sex"
+[ -z "$par" ] || dsv_require_file "$par"
+
+# The ploidy model and the winsor go in FRONT of the user's passthrough, so
+# an explicit --winsorLog2 after `--` still wins.
+front=()
+[ -z "$sex" ]    || front+=(--sex "$sex" --sexCol "$sex_col")
+[ -z "$par" ]    || front+=(--par "$par")
+[ -z "$winsor" ] || front+=(--winsorLog2 "$winsor")
+extra=(${front[@]+"${front[@]}"} ${extra[@]+"${extra[@]}"})
 # Modules first: on a cluster the tools may only exist after `module load`.
 dsv_load_modules
 dsv_require_cmd bgzip tabix parallel Rscript
@@ -60,8 +82,9 @@ stats="$out_dir/stats_ndim${ndim}.${slug}.txt"
 # What this unit is about to compute, so a finished unit is only reused for
 # the same inputs and parameters (a swapped coverage table or an edited
 # driver invalidates it; the region and ndim are in the filename already).
-sig="$(printf 'stage=correct\nmatrix=%s\npcs=%s\ncoverage=%s\nregion=%s\nndim=%s\nextra=%s\nscript=%s\nrscript=%s' \
+sig="$(printf 'stage=correct\nmatrix=%s\npcs=%s\ncoverage=%s\nsex=%s\npar=%s\nregion=%s\nndim=%s\nextra=%s\nscript=%s\nrscript=%s' \
        "$(dsv_file_sig "$matrix")" "$(dsv_file_sig "$pcs")" "$(dsv_file_sig "$coverage")" \
+       "$([ -z "$sex" ] || dsv_file_sig "$sex")" "$([ -z "$par" ] || dsv_file_sig "$par")" \
        "$region" "$ndim" "${extra[*]+"${extra[*]}"}" "$(dsv_script_sig "$0")" "$(dsv_script_sig "$rscript")")"
 
 if [ "$force" -eq 0 ] && dsv_output_complete "$final" "$sig"; then

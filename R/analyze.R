@@ -29,6 +29,16 @@
 # bin, once sex is a covariate). With the PCs in the model the projection
 # is the same on both sides and Frisch-Waugh holds exactly. Hence --pcs and
 # --ndim: pass the table and count the correction used.
+#
+# A region whose depth is missing for some samples (no expected copies:
+# chrY in females) is fitted on the samples that have it, with the design
+# refactorised for that subset; the subset is the same for every such
+# region, so the refactorisation is cached. Nothing is imputed.
+#
+# Per-region QC, beyond --minObs and --minVariance: MAXSHARE is the largest
+# share of the residualised depth's sum of squares carried by one sample. A
+# region above --maxShare is a test of one participant — the read-depth
+# analogue of a minor allele count of one — and is skipped.
 # ---------------------------------------------------------------------------
 
 suppressPackageStartupMessages({
@@ -51,12 +61,18 @@ option_list <- list(
               help = "PCs removed by the correction; PC1..PCndim join the covariates [default %default]"),
   make_option("--caseLevel", type = "character", default = NULL,
               help = "for a character/factor binary response, the level that is the case"),
+  make_option("--rankInt", action = "store_true", default = FALSE,
+              help = "rank-based inverse-normal transform of a quantitative response (linear only)"),
+  make_option("--robust", action = "store_true", default = FALSE,
+              help = "heteroskedasticity-robust (HC1) SE for linear; robust variance for coxph"),
   make_option("--minObs", type = "integer", default = 100,
               help = "skip a region with fewer complete observations [default %default]"),
   make_option("--minCases", type = "integer", default = 20,
               help = "refuse a binary or survival phenotype with fewer cases or events, or controls [default %default]"),
   make_option("--minVariance", type = "double", default = 1e-12,
               help = "skip a region whose depth variance is at or below this [default %default]"),
+  make_option("--maxShare", type = "double", default = 0.5,
+              help = "skip a region where one sample carries more than this share of the residual depth SS [default %default]"),
   make_option("--sampleIdPattern", type = "character", default = NULL,
               help = paste("optional PCRE applied to matrix column names to recover sample IDs;",
                            "the first capture group is kept. Default: use column names as-is.")),
@@ -82,6 +98,7 @@ if (opt$ndim > 0 && is.null(opt$pcs)) {
        "so the test must condition on them", call. = FALSE)
 }
 if (!opt$projection %in% c("explicit", "qr")) stop("--projection must be 'explicit' or 'qr'", call. = FALSE)
+if (opt$rankInt && opt$regressionMethod != "linear") stop("--rankInt applies to linear models only", call. = FALSE)
 # Only the Cox path needs it, and every parallel chunk pays the load cost.
 if (opt$regressionMethod == "coxph") suppressPackageStartupMessages(library(survival))
 
@@ -134,8 +151,6 @@ if (length(header) < 5L) {
 }
 sample_ids <- normalize_sample_ids(header[-(1:4)], opt$sampleIdPattern)
 n_samples  <- length(sample_ids)
-# match() is many-to-one: two matrix columns mapping to one participant would
-# both be kept and that participant counted twice.
 refuse_duplicates(sample_ids, "the matrix header (after --sampleIdPattern)")
 
 # --- model terms -----------------------------------------------------------
@@ -205,7 +220,7 @@ if (length(pc_cols)) {
   pidx <- match(sample_ids, pcs_dt$SAMPLE)
   n_nopc <- sum(is.na(pidx) & !is.na(idx))
   if (n_nopc > 0) message(sprintf("[align] %d matrix samples lack PCs; dropped", n_nopc))
-  for (pc in pc_cols) aligned[[pc]] <- pcs_dt[[pc]][pidx]
+  for (pc in pc_cols) set(aligned, j = pc, value = pcs_dt[[pc]][pidx])
 }
 
 complete_base <- !is.na(idx) & complete.cases(aligned[, ..needed])
@@ -258,30 +273,26 @@ encode_binary <- function(y, what) {
   as.integer(y == opt$caseLevel)
 }
 
+rank_int <- function(y) qnorm((rank(y, ties.method = "average") - 0.5) / length(y))
+
+# The projection of a vector or a block of rows on the orthogonal complement
+# of the covariate design. Q MUST be truncated to the numerical rank.
+make_projector <- function(Zm) {
+  q <- qr(Zm)
+  Qm <- qr.Q(q)[, seq_len(q$rank), drop = FALSE]
+  list(rank = q$rank, qr = q,
+       vec   = if (opt$projection == "explicit") function(v) as.numeric(v - Qm %*% crossprod(Qm, v))
+               else function(v) as.numeric(qr.resid(q, v)),
+       block = if (opt$projection == "explicit") function(M) M - (M %*% Qm) %*% t(Qm)
+               else function(M) t(apply(M, 1L, function(v) qr.resid(q, v))))
+}
+proj <- make_projector(Z)
+
 if (opt$regressionMethod == "linear") {
-  qr_Z   <- qr(Z)
-  df_res <- n_use - qr_Z$rank - 1L
+  if (opt$rankInt) y_vec <- rank_int(as.numeric(y_vec))
+  df_res <- n_use - proj$rank - 1L
   if (df_res < 1L) stop("no residual degrees of freedom; too few samples for this model", call. = FALSE)
-
-  # Two ways to compute the same projection, residual = (I - P)v: 'qr' uses
-  # qr.resid() (Householder, unblocked); 'explicit' forms the orthonormal Q
-  # and computes v - Q(Q'v), 12-20x faster and agreeing to ~6e-14. Q MUST be
-  # truncated to the numerical rank: qr.Q() returns every column, and on a
-  # rank-deficient design the extra columns span numerically-null directions.
-  Q <- qr.Q(qr_Z)[, seq_len(qr_Z$rank), drop = FALSE]
-  residualize <- if (opt$projection == "explicit") {
-    function(v) as.numeric(v - Q %*% crossprod(Q, v))
-  } else {
-    function(v) as.numeric(qr.resid(qr_Z, v))
-  }
-  # The same projection applied to a block of regions at once (rows = regions).
-  residualize_block <- if (opt$projection == "explicit") {
-    function(M) M - (M %*% Q) %*% t(Q)
-  } else {
-    function(M) t(apply(M, 1L, function(v) qr.resid(qr_Z, v)))
-  }
-
-  y_res  <- residualize(as.numeric(y_vec))
+  y_res  <- proj$vec(as.numeric(y_vec))
   yy_res <- sum(y_res^2)
 } else if (opt$regressionMethod == "logistic") {
   y_bin <- encode_binary(y_vec, response)
@@ -293,9 +304,6 @@ if (opt$regressionMethod == "linear") {
   # intercept, depth placeholder, then covariates
   X_fixed <- cbind(Z[, 1, drop = FALSE], cov_resids = 0, Z[, -1, drop = FALSE])
   depth_col <- 2L
-  # The null deviance (no depth term) is the same for every region.
-  null_fit <- suppressWarnings(glm.fit(X_fixed[, -depth_col, drop = FALSE], y_bin, family = binomial()))
-  dev_null <- null_fit$deviance
 } else {
   ev <- aligned[[response]][base_rows]
   ev_bin <- encode_binary(ev, response)
@@ -307,25 +315,67 @@ if (opt$regressionMethod == "linear") {
   aligned[[response]][base_rows] <- ev_bin
 }
 
+# Subset designs, for regions with missing samples. One-entry cache: the
+# missing set is the same for every region of the same kind (chrY).
+sub_cache <- list(mask = NULL)
+subset_design <- function(mask) {
+  if (!is.null(sub_cache$mask) && identical(sub_cache$mask, mask)) return(sub_cache)
+  s <- list(mask = mask, n = sum(mask), proj = make_projector(Z[mask, , drop = FALSE]))
+  if (opt$regressionMethod == "linear") {
+    s$df <- s$n - s$proj$rank - 1L
+    s$y_res <- s$proj$vec(as.numeric(y_vec[mask]))
+    s$yy <- sum(s$y_res^2)
+  } else if (opt$regressionMethod == "logistic") {
+    s$X_fixed <- X_fixed[mask, , drop = FALSE]
+    s$y <- y_bin[mask]
+    s$dev_null <- suppressWarnings(glm.fit(s$X_fixed[, -depth_col, drop = FALSE], s$y, family = binomial()))$deviance
+  }
+  sub_cache <<- s
+  s
+}
+full_design <- list(mask = rep(TRUE, n_use), n = n_use, proj = proj)
+if (opt$regressionMethod == "linear") {
+  full_design$df <- df_res; full_design$y_res <- y_res; full_design$yy <- yy_res
+} else if (opt$regressionMethod == "logistic") {
+  full_design$X_fixed <- X_fixed; full_design$y <- y_bin
+  full_design$dev_null <- suppressWarnings(glm.fit(X_fixed[, -depth_col, drop = FALSE], y_bin, family = binomial()))$deviance
+}
+
 # --- output header ---------------------------------------------------------
 
 stat_cols <- switch(opt$regressionMethod,
   linear   = c("BETA", "SE", "STAT", "P", "LOG10P"),
   logistic = c("BETA", "SE", "STAT", "P", "LOG10P", "LRT_P", "CONVERGED"),
   coxph    = c("BETA", "HR", "SE", "STAT", "P", "LOG10P", "CONVERGED"))
-out_header <- c("#CHROM", "START", "END", "Region", "N", "NCase", "NControl", stat_cols)
+out_header <- c("#CHROM", "START", "END", "Region", "N", "NCase", "NControl", stat_cols, "MAXSHARE")
 if (!opt$skipOutputHeader) cat(paste(out_header, collapse = "\t"), "\n", sep = "")
 
 fmt <- function(x) formatC(x, digits = opt$digits, format = "g")
 log10p_t <- function(tval, df) -(pt(-abs(tval), df, log.p = TRUE) + log(2)) / log(10)
 log10p_z <- function(z) -(pnorm(-abs(z), log.p = TRUE) + log(2)) / log(10)
 
-# --- per-region estimators (logistic and Cox) ------------------------------
+# --- per-region estimators -------------------------------------------------
 
-fit_logistic <- function(g) {
-  X <- X_fixed
+# Linear fit of one region on a design s; g has no NA within s$mask.
+fit_linear_one <- function(g, s) {
+  x_res <- s$proj$vec(g)
+  xx <- sum(x_res^2)
+  if (xx <= 0) return(NULL)
+  share <- max(x_res^2) / xx
+  beta <- sum(x_res * s$y_res) / xx
+  e <- s$y_res - beta * x_res
+  se <- if (opt$robust) sqrt(sum(x_res^2 * e^2) / xx^2 * s$n / s$df) else sqrt((sum(e^2) / s$df) / xx)
+  tval <- beta / se
+  list(vals = c(beta, se, tval, 2 * pt(-abs(tval), s$df), log10p_t(tval, s$df)), share = share)
+}
+
+fit_logistic_one <- function(g, s) {
+  x_res <- s$proj$vec(g); xx <- sum(x_res^2)
+  if (xx <= 0) return(NULL)
+  share <- max(x_res^2) / xx
+  X <- s$X_fixed
   X[, depth_col] <- g
-  f <- suppressWarnings(glm.fit(X, y_bin, family = binomial()))
+  f <- suppressWarnings(glm.fit(X, s$y, family = binomial()))
   p <- f$rank
   piv <- f$qr$pivot[seq_len(p)]
   pos <- match(depth_col, piv)
@@ -335,27 +385,47 @@ fit_logistic <- function(g) {
   beta <- f$coefficients[depth_col]
   if (!is.finite(beta) || !is.finite(se)) return(NULL)
   z <- beta / se
-  lrt <- max(0, dev_null - f$deviance)
-  c(beta, se, z, 2 * pnorm(-abs(z)), log10p_z(z), pchisq(lrt, 1, lower.tail = FALSE), as.integer(f$converged))
+  lrt <- max(0, s$dev_null - f$deviance)
+  list(vals = c(beta, se, z, 2 * pnorm(-abs(z)), log10p_z(z), pchisq(lrt, 1, lower.tail = FALSE),
+                as.integer(f$converged)), share = share)
 }
 
-fit_coxph <- function(g, keep) {
-  dt <- aligned[base_rows][keep]
-  dt[, cov_resids := g[keep]]
+fit_coxph_one <- function(g, s) {
+  x_res <- s$proj$vec(g); xx <- sum(x_res^2)
+  if (xx <= 0) return(NULL)
+  share <- max(x_res^2) / xx
+  dt <- aligned[base_rows][s$mask]
+  dt[, cov_resids := g]
   converged <- 1L
   f <- withCallingHandlers(
-    try(coxph(model_formula, data = dt), silent = TRUE),
+    try(coxph(model_formula, data = dt, robust = opt$robust), silent = TRUE),
     warning = function(w) { converged <<- 0L; invokeRestart("muffleWarning") })
   if (inherits(f, "try-error")) return(NULL)
   cf <- coef(summary(f))
   if (!"cov_resids" %in% rownames(cf)) return(NULL)
-  v <- as.numeric(cf["cov_resids", ])               # coef exp(coef) se(coef) z p
-  c(v[1], v[2], v[3], v[4], v[5], log10p_z(v[4]), converged)
+  v <- as.numeric(cf["cov_resids", ])
+  # coef exp(coef) se(coef) [robust se] z p — the z and p are the last two
+  z <- v[length(v) - 1L]; pv <- v[length(v)]; se <- v[3L + as.integer(opt$robust)]
+  list(vals = c(v[1], v[2], se, z, pv, log10p_z(z), converged), share = share)
+}
+
+fit_one <- switch(opt$regressionMethod, linear = fit_linear_one, logistic = fit_logistic_one, coxph = fit_coxph_one)
+
+emit <- function(meta_row, n_obs, s, r) {
+  if (opt$regressionMethod == "linear") { nc <- n_obs; nk <- n_obs }
+  else {
+    resp <- if (opt$regressionMethod == "logistic") s$y else aligned[[response]][base_rows][s$mask]
+    nc <- sum(resp == 1L); nk <- n_obs - nc
+  }
+  vals <- r$vals
+  conv <- if (opt$regressionMethod == "linear") character(0) else as.character(as.integer(vals[length(vals)]))
+  if (opt$regressionMethod != "linear") vals <- vals[-length(vals)]
+  cat(paste(c(meta_row, n_obs, nc, nk, fmt(vals), conv, fmt(r$share)), collapse = "\t"), "\n", sep = "")
 }
 
 # --- stream ----------------------------------------------------------------
 
-n_out <- 0L; n_skipped <- 0L; n_error <- 0L
+n_out <- 0L; n_skipped <- 0L; n_share <- 0L; n_error <- 0L
 region_cols <- 4L
 
 repeat {
@@ -363,7 +433,7 @@ repeat {
   if (!length(lines)) break
 
   block <- data.table::fread(text = lines, header = FALSE, sep = "\t", showProgress = FALSE,
-                             colClasses = list(character = seq_len(region_cols)))
+                             colClasses = list(character = seq_len(region_cols)), na.strings = c("NA", ""))
   if (ncol(block) != region_cols + n_samples) {
     n_skipped <- n_skipped + nrow(block)
     message(sprintf("[skip] block has %d columns, expected %d", ncol(block), region_cols + n_samples))
@@ -375,50 +445,56 @@ repeat {
   storage.mode(depth) <- "double"
   depth <- depth[, base_rows, drop = FALSE]        # usable samples only, in design order
 
-  # Per-region QC: enough complete observations, and some variation. Missing
-  # depths are mean-imputed so the fixed design stays valid; regions with
-  # meaningful missingness are excluded by --minObs.
   n_obs <- rowSums(!is.na(depth))
-  row_mean <- rowMeans(depth, na.rm = TRUE)
-  na_pos <- which(is.na(depth), arr.ind = TRUE)
-  if (nrow(na_pos)) depth[na_pos] <- row_mean[na_pos[, 1]]
-  row_var <- apply(depth, 1L, stats::var)
+  row_var <- apply(depth, 1L, function(v) stats::var(v[!is.na(v)]))
   ok <- n_obs >= opt$minObs & is.finite(row_var) & row_var > opt$minVariance
   n_skipped <- n_skipped + sum(!ok)
+  complete <- ok & n_obs == n_use
 
-  if (opt$regressionMethod == "linear") {
-    if (any(ok)) {
-      Dr   <- residualize_block(depth[ok, , drop = FALSE])
-      xx   <- rowSums(Dr^2)
-      beta <- as.numeric(Dr %*% y_res) / xx
-      rss  <- yy_res - beta^2 * xx
-      se   <- sqrt((rss / df_res) / xx)
-      tval <- beta / se
-      pval <- 2 * pt(-abs(tval), df_res)
-      lp   <- log10p_t(tval, df_res)
-      good <- xx > 0 & is.finite(tval)             # exact collinearity with the covariates
-      n_skipped <- n_skipped + sum(!good)
-      rows <- which(ok)[good]
-      out <- cbind(meta[rows, , drop = FALSE], n_obs[rows], n_obs[rows], n_obs[rows],
-                   fmt(beta[good]), fmt(se[good]), fmt(tval[good]), fmt(pval[good]), fmt(lp[good]))
-      if (nrow(out)) writeLines(apply(out, 1L, paste, collapse = "\t"))
-      n_out <- n_out + nrow(out)
+  # Complete regions of a linear model: one block projection for all of them.
+  if (opt$regressionMethod == "linear" && any(complete)) {
+    rows <- which(complete)
+    Dr   <- proj$block(depth[rows, , drop = FALSE])
+    xx   <- rowSums(Dr^2)
+    share <- apply(Dr^2, 1L, max) / xx
+    beta <- as.numeric(Dr %*% y_res) / xx
+    E    <- matrix(y_res, nrow = length(rows), ncol = n_use, byrow = TRUE) - beta * Dr
+    se   <- if (opt$robust) sqrt(rowSums(Dr^2 * E^2) / xx^2 * n_use / df_res)
+            else sqrt((rowSums(E^2) / df_res) / xx)
+    tval <- beta / se
+    pval <- 2 * pt(-abs(tval), df_res)
+    lp   <- log10p_t(tval, df_res)
+    good <- xx > 0 & is.finite(tval)
+    over <- good & share > opt$maxShare
+    n_share <- n_share + sum(over)
+    n_skipped <- n_skipped + sum(!good)
+    keepi <- which(good & !over)
+    if (length(keepi)) {
+      out <- cbind(meta[rows[keepi], , drop = FALSE], n_obs[rows[keepi]], n_obs[rows[keepi]], n_obs[rows[keepi]],
+                   fmt(beta[keepi]), fmt(se[keepi]), fmt(tval[keepi]), fmt(pval[keepi]), fmt(lp[keepi]),
+                   fmt(share[keepi]))
+      writeLines(apply(out, 1L, paste, collapse = "\t"))
+      n_out <- n_out + length(keepi)
     }
+    todo <- which(ok & !complete)
   } else {
-    for (i in which(ok)) {
-      g <- depth[i, ]
-      keep <- rep(TRUE, length(g))
-      vals <- tryCatch(
-        if (opt$regressionMethod == "logistic") fit_logistic(g) else fit_coxph(g, keep),
-        error = function(e) { n_error <<- n_error + 1L; NULL })
-      if (is.null(vals) || anyNA(vals)) { n_skipped <- n_skipped + 1L; next }
-      resp <- if (opt$regressionMethod == "logistic") y_bin else aligned[[response]][base_rows]
-      nc <- sum(resp == 1L); nk <- n_obs[i] - nc
-      cat(paste(c(meta[i, ], n_obs[i], nc, nk, fmt(vals[-length(vals)]), as.integer(vals[length(vals)])),
-                collapse = "\t"), "\n", sep = "")
-      n_out <- n_out + 1L
-    }
+    todo <- which(ok)
+  }
+
+  # Everything else — logistic and Cox regions, and regions with missing
+  # samples — one at a time on the matching design.
+  for (i in todo) {
+    g_all <- depth[i, ]
+    mask <- !is.na(g_all)
+    s <- if (all(mask)) full_design else subset_design(mask)
+    if (!all(mask) && (opt$regressionMethod != "linear" && s$n < opt$minObs)) { n_skipped <- n_skipped + 1L; next }
+    if (opt$regressionMethod == "linear" && !all(mask) && s$df < 1L) { n_skipped <- n_skipped + 1L; next }
+    r <- tryCatch(fit_one(g_all[mask], s), error = function(e) { n_error <<- n_error + 1L; NULL })
+    if (is.null(r) || anyNA(r$vals)) { n_skipped <- n_skipped + 1L; next }
+    if (r$share > opt$maxShare) { n_share <- n_share + 1L; next }
+    emit(meta[i, ], n_obs[i], s, r)
+    n_out <- n_out + 1L
   }
 }
 
-message(sprintf("[done] processed=%d skipped=%d err=%d", n_out, n_skipped, n_error))
+message(sprintf("[done] processed=%d skipped=%d single_sample=%d err=%d", n_out, n_skipped, n_share, n_error))
