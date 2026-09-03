@@ -92,7 +92,14 @@ jobs:
           ! grep -q $'\tFAIL\t' "$W"/eval/*/checks.tsv
           awk -F'\t' 'NR>1 && $2 != "PASS" {print "non-PASS pair:", $0; bad=1} END {exit bad}' "$W/compare/standard_vs_fast/concordance.tsv"
           grep -iH 'verdict' "$W"/eval/*/summary.md "$W/compare/summary.md"
-          bash example/1000G_highcov/run.sh --smoke --runner local > /tmp/rerun.log 2>&1
+          if ! bash example/1000G_highcov/run.sh --smoke --runner local > /tmp/rerun.log 2>&1; then
+            echo "rerun exited non-zero; last 60 lines:"; tail -n 60 /tmp/rerun.log
+            # The failing lines as check annotations too, so they are readable
+            # without opening the job log.
+            grep -n "ERROR\|FAILED\|Error\|halted\|WARN:" /tmp/rerun.log | tail -n 8 | while IFS= read -r l; do echo "::error::rerun: ${l:0:900}"; done
+            tail -n 3 /tmp/rerun.log | while IFS= read -r l; do echo "::error::rerun tail: ${l:0:900}"; done
+            exit 1
+          fi
           [ "$(grep -c redoing /tmp/rerun.log)" -eq 0 ] || { echo "rerun redid units:"; grep redoing /tmp/rerun.log; exit 1; }
 
   macos:
