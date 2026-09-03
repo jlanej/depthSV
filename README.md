@@ -12,6 +12,10 @@ first discretising depth into copy-number calls.
 
 ---
 
+**Documentation:** the methods, end to end, are laid out at
+[jlanej.github.io/depthSV](https://jlanej.github.io/depthSV/) (served from
+`docs/`; enable GitHub Pages from `main` / `docs` if the link is new).
+
 ## Scope
 
 **In scope:** joining per-sample depth into a matrix, normalisation and

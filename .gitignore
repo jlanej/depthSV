@@ -42,3 +42,6 @@ slurm-*.out
 # Test scratch
 tests/fixtures/
 tests/scratch/
+
+# Claude Code session files (launch configs, local state)
+.claude/
