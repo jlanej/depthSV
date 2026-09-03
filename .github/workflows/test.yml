@@ -74,9 +74,13 @@ jobs:
           bash example/1000G_highcov/preamble.sh --smoke --ndim-only
           bash example/1000G_highcov/run.sh --smoke --runner local
 
+      # The rerun needs the same environment as the run: without EX_WORK_DIR
+      # it would default to /scratch/$USER, which the runner cannot create.
       - name: Assert the end state
         env:
           W: /tmp/depthsv-example-smoke
+          EX_WORK_DIR: /tmp/depthsv-example-smoke
+          EX_GITHUB_REF: af2c8fd
         run: |
           for f in preamble/ndim.txt preamble/ndim/ndim_by_mode.tsv inputs/run.env \
                    eval/standard/summary.md eval/fast/summary.md eval/standard/checks.tsv \
