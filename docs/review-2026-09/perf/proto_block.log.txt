@@ -1,0 +1,22 @@
+=== 500k
+build+cache Q (500000 x 41): 2.26 s, 176 MB on disk
+load cached Q: 0.22 s
+Error in L2 %*% Q : non-conformable arguments
+Calls: tm -> force
+Execution halted
+=== 500k again (Q cached)
+load cached Q: 0.34 s
+Error in L2 %*% Q : non-conformable arguments
+Calls: tm -> force
+Execution halted
+=== 50k
+build+cache Q (50000 x 41): 0.32 s, 18 MB on disk
+load cached Q: 0.02 s
+Error in L2 %*% Q : non-conformable arguments
+Calls: tm -> force
+Execution halted
+=== shipped scripts on the same chunks (wall, single process):
+correct.R 22 rows @500k: real 15.44
+analyze.R 13 rows @500k linear: real 7.55
+correct.R 40 rows @50k: real 2.35
+analyze.R 40 rows @50k linear: real 2.32

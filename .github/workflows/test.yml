@@ -3,6 +3,7 @@ name: test
 on:
   push:
     branches: [main, master]
+    tags: ['v*']
   pull_request:
 
 jobs:
@@ -63,24 +64,59 @@ jobs:
       # locally: join, correct, analyze, truth checks, mode comparison and
       # the profile report. Asserts the end state exists on top of the
       # evaluation's own exit code.
+      # The upstream ref is pinned so CI does not move with a third party's
+      # HEAD; bump it deliberately when NGS-PCA commits new example outputs.
       - name: Run the example end to end
         env:
           EX_WORK_DIR: /tmp/depthsv-example-smoke
+          EX_GITHUB_REF: af2c8fd
         run: |
           bash example/1000G_highcov/preamble.sh --smoke --ndim-only
           bash example/1000G_highcov/run.sh --smoke --runner local
 
+      # The rerun needs the same environment as the run: without EX_WORK_DIR
+      # it would default to /scratch/$USER, which the runner cannot create.
       - name: Assert the end state
+        env:
+          W: /tmp/depthsv-example-smoke
+          EX_WORK_DIR: /tmp/depthsv-example-smoke
+          EX_GITHUB_REF: af2c8fd
         run: |
-          for f in preamble/ndim.txt preamble/ndim/ndim_by_mode.tsv \
-                   eval/standard/summary.md eval/fast/summary.md \
+          for f in preamble/ndim.txt preamble/ndim/ndim_by_mode.tsv inputs/run.env \
+                   eval/standard/summary.md eval/fast/summary.md eval/standard/checks.tsv \
+                   work/standard/export_ndim4/mtdna_cn.linear.txt.gz \
+                   work/standard/export_ndim4/mtdna_cn.linear.summary.tsv \
+                   sv_recovery/standard/sv_recovery_summary.tsv sv_recovery/standard/recommended_ndim.txt \
                    compare/summary.md compare/calibration.tsv \
                    compare/standard_vs_fast/concordance.tsv \
                    profile/profile_report.md profile/timings.tsv; do
-            [ -s "/tmp/depthsv-example-smoke/$f" ] || { echo "missing $f"; exit 1; }
+            [ -s "$W/$f" ] || { echo "missing $f"; exit 1; }
           done
-          grep -H 'verdict' /tmp/depthsv-example-smoke/eval/*/summary.md \
-                            /tmp/depthsv-example-smoke/compare/summary.md
+          # No FAIL anywhere, every pair PASS, and a rerun must skip everything.
+          ! grep -q $'\tFAIL\t' "$W"/eval/*/checks.tsv
+          awk -F'\t' 'NR>1 && $2 != "PASS" {print "non-PASS pair:", $0; bad=1} END {exit bad}' "$W/compare/standard_vs_fast/concordance.tsv"
+          grep -iH 'verdict' "$W"/eval/*/summary.md "$W/compare/summary.md"
+          if ! bash example/1000G_highcov/run.sh --smoke --runner local > /tmp/rerun.log 2>&1; then
+            echo "rerun exited non-zero; last 60 lines:"; tail -n 60 /tmp/rerun.log
+            # The failing lines as check annotations too, so they are readable
+            # without opening the job log.
+            grep -n "ERROR\|FAILED\|Error\|halted\|WARN:" /tmp/rerun.log | tail -n 8 | while IFS= read -r l; do echo "::error::rerun: ${l:0:900}"; done
+            tail -n 3 /tmp/rerun.log | while IFS= read -r l; do echo "::error::rerun tail: ${l:0:900}"; done
+            exit 1
+          fi
+          [ "$(grep -c redoing /tmp/rerun.log)" -eq 0 ] || { echo "rerun redid units:"; grep redoing /tmp/rerun.log; exit 1; }
+
+  macos:
+    name: suite on macOS (bash 3.2)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: brew install r htslib parallel >/dev/null
+      - name: Install R packages
+        run: Rscript -e 'install.packages(c("optparse","data.table"), repos="https://cloud.r-project.org", quiet=TRUE)'
+      - name: End-to-end smoke test under /bin/bash 3.2
+        run: /bin/bash tests/smoke_test.sh /tmp/smoke-macos
 
   container:
     name: suite in the container
@@ -105,7 +141,58 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Check the WDL parses and type-checks
+      - name: Check the WDLs parse and type-check
         run: |
           pip install --quiet miniwdl
-          miniwdl check workflows/depthsv.wdl
+          miniwdl check workflows/depthsv.wdl workflows/depthsv_blocks.wdl
+
+  # The image the cloud platforms run: built for linux/amd64 on every release
+  # tag (v0.2.0 -> ghcr.io/<owner>/depthsv:0.2.0 and :latest), labelled with
+  # the version and commit, and its digest printed in the job summary so a
+  # workflow input can pin it. Needs the suite to have passed in the image.
+  publish-image:
+    name: publish the image on a release tag
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [smoke, container, workflow-lint]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Version from the tag
+        id: v
+        run: |
+          tag="${GITHUB_REF#refs/tags/v}"
+          [ "$tag" = "$(tr -d '[:space:]' < VERSION)" ] || { echo "tag v$tag does not match VERSION ($(cat VERSION))"; exit 1; }
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+          echo "owner=$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push (linux/amd64)
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: true
+          build-args: |
+            DEPTHSV_VERSION=${{ steps.v.outputs.version }}
+            DEPTHSV_COMMIT=${{ github.sha }}
+          tags: |
+            ghcr.io/${{ steps.v.outputs.owner }}/depthsv:${{ steps.v.outputs.version }}
+            ghcr.io/${{ steps.v.outputs.owner }}/depthsv:latest
+      - name: Record the digest
+        run: |
+          {
+            echo "## depthsv image"
+            echo
+            echo "- \`ghcr.io/${{ steps.v.outputs.owner }}/depthsv:${{ steps.v.outputs.version }}\`"
+            echo "- digest: \`${{ steps.push.outputs.digest }}\`"
+            echo
+            echo "Pin it in a workflow input as \`ghcr.io/${{ steps.v.outputs.owner }}/depthsv@${{ steps.push.outputs.digest }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"

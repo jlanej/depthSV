@@ -1,0 +1,2 @@
+n=50000 m=500 p=12  loop 1.37 s (2.73 ms/bin)  block 0.24 s (0.474 ms/bin)  speedup 5.8x  max|diff| beta 1.4e-16 t 6.2e-15
+parse 500 x 50000 (245 MB text): character+as.numeric 17.76 s   numeric fread 2.86 s   (6.2x)

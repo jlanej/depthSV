@@ -35,6 +35,16 @@ EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 export EX_EXAMPLE_DIR
 
 source "$EX_EXAMPLE_DIR/../../lib/common.sh"   # sets -euo pipefail, DSV_ROOT
+
+# The parameters stage 1 froze for this run (inputs/run.env) load BEFORE the
+# configuration, as defaults that only an explicit environment overrides:
+# every job of a submission then agrees on ndim and the covariates however
+# the preamble's files change underneath. The work-dir default here must
+# match config.sh's.
+EX_WORK_DIR="${EX_WORK_DIR:-/scratch/${USER:-$(id -un)}/depthsv_1000G_highcov}"
+# shellcheck disable=SC1090
+[ ! -s "${EX_INPUTS_DIR:-$EX_WORK_DIR/inputs}/run.env" ] || source "${EX_INPUTS_DIR:-$EX_WORK_DIR/inputs}/run.env"
+
 source "$EX_EXAMPLE_DIR/config.sh"
 
 # --- modes -----------------------------------------------------------------
@@ -101,11 +111,17 @@ ex_join_dir() {
 # analysis filenames do not: without it, rerunning after an EX_NDIM change
 # would skip every analysis as already complete and hand back stale results.
 ex_assoc_dir() { printf '%s/%s/assoc_ndim%s\n' "$EX_RUN_DIR" "$1" "$EX_NDIM"; }
+# The export of that directory: one table, summary and hits per analysis.
+ex_export_dir() { printf '%s/%s/export_ndim%s\n' "$EX_RUN_DIR" "$1" "$EX_NDIM"; }
+# SV-callset recovery output for one mode.
+ex_sv_dir() { printf '%s/sv_recovery/%s\n' "$EX_WORK_DIR" "$1"; }
 
-# A mode is ready once 00 and 01 have produced its inputs.
+# A mode is ready once 00 and 01 have produced its inputs and 01 finished
+# the mode (prepared.ok); a prepare that died part-way leaves no marker.
 ex_mode_ready() {                  # ex_mode_ready <mode>
     local in; in="$(ex_inputs_dir "$1")"
-    [ -s "$in/mosdepth.manifest.txt" ] && [ -s "$in/svd.pcs.txt" ] && [ -s "$in/phenotypes.tsv" ]
+    [ -f "$in/prepared.ok" ] && [ -s "$in/mosdepth.manifest.txt" ] \
+        && [ -s "$in/svd.pcs.txt" ] && [ -s "$in/phenotypes.tsv" ]
 }
 
 ex_ready_modes() {
@@ -141,8 +157,24 @@ ex_export_dsv_env() {              # ex_export_dsv_env <mode>
 
     export DSV_NDIM="$EX_NDIM"
     export DSV_MIN_OBS="$EX_MIN_OBS"
+    export DSV_MAX_SHARE="$EX_MAX_SHARE"
+    export DSV_WINSOR_LOG2="$EX_WINSOR_LOG2"
+    export DSV_PERMS="$EX_PERMS"
+    export DSV_PERM_SEED="$EX_PERM_SEED"
+    export DSV_MIN_COUNT="$EX_MIN_COUNT"
+    DSV_EXPORT_DIR="$(ex_export_dir "$mode")"; export DSV_EXPORT_DIR
     export DSV_JOBS="$EX_JOBS"
     export DSV_THREADS="$EX_THREADS"
+
+    # The ploidy model reads the inferred sex the phenotype table carries as
+    # M/F; the PAR BED comes from the depthSV checkout.
+    if [ "$EX_PLOIDY" = "1" ]; then
+        export DSV_SEX="$in/phenotypes.tsv"
+        export DSV_SEX_COL="SEX_MF"
+        export DSV_PAR="$EX_PAR"
+    else
+        unset DSV_SEX DSV_SEX_COL DSV_PAR
+    fi
 }
 
 # --- timing ----------------------------------------------------------------

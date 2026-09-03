@@ -1,0 +1,5 @@
+columns: coef exp(coef) se(coef) z p
+null bin, no outlier:                               0.1866 1.2052 0.3276 0.5697 0.5689 
+one floored sample (-12.7) with the earliest event:   -0.5525 0.5755 0.1204 -4.5889 0  warning: none 
+3 floored carriers, all with the 3 earliest events:   -0.7218 0.4859 0.1161 -6.2143 0  warning: none 
+2000 null bins, one floored sample each: P(p<0.05)=0.130  P(p<1e-3)=0.0255  P(p<1e-4)=0.0100  min p=0.00e+00

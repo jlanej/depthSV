@@ -1,0 +1,44 @@
+n=3199 samples, K=42 coverage PCs removed, Z = SEX + 25 population dummies, 20000 null bins
+
+1. NULL technical bins (iid noise), phenotype = real MTDNA_CN
+pipeline adjusted:   y ~ x_res + SEX + pop     lambda=0.596  P(p<.05)=0.0118  P(p<1e-3)=0.00000  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00  medSE=26.01
+pipeline unadjusted: y ~ x_res                 lambda=0.441  P(p<.05)=0.0038  P(p<1e-3)=0.00000  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00  medSE=28.66
+full model:          y ~ x + PC1..42 + SEX + pop lambda=0.991  P(p<.05)=0.0511  P(p<1e-3)=0.00120  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00  medSE=18.53
+pipeline adjusted, y = rank-INT(MTDNA_CN)      lambda=0.565  P(p<.05)=0.0106  P(p<1e-3)=0.00000  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00  medSE=0.1613
+full model, y = rank-INT(MTDNA_CN)             lambda=0.994  P(p<.05)=0.0501  P(p<1e-3)=0.00090  P(p<1e-4)=0.00015  P(p<5e-8)=0.00e+00  medSE=0.1123
+   median SE ratio pipeline-adjusted / full = 1.404 ; median |t| ratio = 0.776
+
+2. one zero-depth sample per bin (log2(0.005/33) = -12.7), rest N(0, 0.1); real phenotype; adjusted model
+   floored sample's share of the depth SS after correction: median 0.827 (min 0.141)
+y = MTDNA_CN (raw)      adjusted               lambda=0.476  P(p<.05)=0.0188  P(p<1e-3)=0.00185  P(p<1e-4)=0.00100  P(p<5e-8)=1.50e-04  medSE=10.57
+y = log2(MTDNA_CN)      adjusted               lambda=0.489  P(p<.05)=0.0156  P(p<1e-3)=0.00075  P(p<1e-4)=0.00060  P(p<5e-8)=0.00e+00  medSE=0.02019
+y = rank-INT(MTDNA_CN)  adjusted               lambda=0.512  P(p<.05)=0.0138  P(p<1e-3)=0.00035  P(p<1e-4)=0.00020  P(p<5e-8)=0.00e+00  medSE=0.06557
+y = MTDNA_CN (raw)      unadjusted             lambda=0.368  P(p<.05)=0.0076  P(p<1e-3)=0.00125  P(p<1e-4)=0.00095  P(p<5e-8)=5.00e-05  medSE=11.65
+   3 zero-depth samples per bin (a rare homozygous deletion carried by 3 people):
+y = MTDNA_CN (raw)      adjusted               lambda=0.531  P(p<.05)=0.0155  P(p<1e-3)=0.00070  P(p<1e-4)=0.00025  P(p<5e-8)=0.00e+00  medSE=7.571
+y = log2(MTDNA_CN)      adjusted               lambda=0.529  P(p<.05)=0.0121  P(p<1e-3)=0.00035  P(p<1e-4)=0.00005  P(p<5e-8)=0.00e+00  medSE=0.01446
+y = rank-INT(MTDNA_CN)  adjusted               lambda=0.554  P(p<.05)=0.0108  P(p<1e-3)=0.00005  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00  medSE=0.04695
+
+3. population-stratified deletion (AF: AFR 0.55, others 0.15), NO effect on MTDNA_CN; 2000 replicate bins
+unadjusted 'truth-check' model, log2 coding    lambda=4.921  P(p<.05)=0.2250  P(p<1e-3)=0.00100  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00  medSE=1.096
+adjusted (SEX+pop), log2 coding                lambda=3.861  P(p<.05)=0.1820  P(p<1e-3)=0.00150  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00  medSE=1.013
+full model (PCs+SEX+pop), log2 coding          lambda=0.950  P(p<.05)=0.0390  P(p<1e-3)=0.00000  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00  medSE=0.7415
+unadjusted, ratio (copy-number) coding         lambda=6.765  P(p<.05)=0.3670  P(p<1e-3)=0.00850  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00  medSE=4.644
+   share of the log2-coded depth SS carried by homozygous-deleted samples (10.0% of samples): median 0.965
+
+4. deletion (AF 0.3, HWE, not stratified) with an additive effect of delta per deleted copy on y; 2000 bins
+pipeline log2 coding (beta per log2 unit; x -1 = het) median beta/delta =  0.192   median |t| =   4.74   P(p<5e-8) = 0.168
+pipeline log2 coding winsorised at -3                median beta/delta =  0.715   median |t| =   5.80   P(p<5e-8) = 0.691
+pipeline ratio coding (beta per copy)                median beta/delta =  0.972   median |t| =   5.93   P(p<5e-8) = 0.744
+oracle: true copy count as x                         median beta/delta =  0.979   median |t| =   5.95   P(p<5e-8) = 0.744
+   correlation between log2 coding and true copy count: median -0.783 ; ratio coding: -0.987 ; winsorised(-3): -0.965
+
+5. estimand when the covariate correlates with removed coverage PCs: stratified deletion, additive effect, RATIO coding
+pipeline adjusted (SEX+pop), x_res                   median beta/delta =  0.598   median |t| =   3.37   P(p<5e-8) = 0.002
+pipeline unadjusted, x_res                           median beta/delta =  0.614   median |t| =   3.21   P(p<5e-8) = 0.000
+full model (PCs + SEX + pop), raw x                  median beta/delta =  0.939   median |t| =   7.17   P(p<5e-8) = 0.968
+oracle: x with no PC removal, SEX+pop                median beta/delta =  0.942   median |t| =   5.18   P(p<5e-8) = 0.383
+   variance of the stratified deletion vector removed by the PC projection: median 0.185
+   same, with y additionally carrying a superpopulation effect not in y already (adds 0.5 sd for AFR):
+pipeline adjusted (SEX+pop), x_res                   median beta/delta =  0.598   median |t| =   3.37   P(p<5e-8) = 0.002
+full model (PCs + SEX + pop), raw x                  median beta/delta =  0.939   median |t| =   7.17   P(p<5e-8) = 0.968

@@ -1,0 +1,10 @@
+rho=0.00  neighbour r(t)=-0.002  M=30000  5%-quantile(min p)=1.61e-06  M_eff=30964 (103% of M)  FWER at 0.05/M = 0.052  lambda(all)=0.988  [400 perms in 0.3s]
+rho=0.30  neighbour r(t)=0.303  M=30000  5%-quantile(min p)=1.72e-06  M_eff=29135 (97% of M)  FWER at 0.05/M = 0.048  lambda(all)=0.984  [400 perms in 0.3s]
+rho=0.60  neighbour r(t)=0.602  M=30000  5%-quantile(min p)=2.24e-06  M_eff=22369 (75% of M)  FWER at 0.05/M = 0.035  lambda(all)=0.980  [400 perms in 0.4s]
+rho=0.90  neighbour r(t)=0.905  M=30000  5%-quantile(min p)=3.11e-06  M_eff=16057 (54% of M)  FWER at 0.05/M = 0.028  lambda(all)=1.059  [400 perms in 0.2s]
+rho=0.97  neighbour r(t)=0.971  M=30000  5%-quantile(min p)=5.74e-06  M_eff=8709 (29% of M)  FWER at 0.05/M = 0.018  lambda(all)=1.071  [400 perms in 0.3s]
+
+Scaling: at 3.1M bins x 3202 samples the same product for 1000 permutations is ~2e13 flop, i.e. minutes on one node,
+and it is a by-product of the projection analyze.R already computes (x_res' y for one y becomes x_res' Y for 1000 y).
+
+For reference, with M=3.1e6 INDEPENDENT tests: P(any p < 5e-8) = 0.144 ; Bonferroni 0.05/M = 1.61e-08

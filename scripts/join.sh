@@ -3,7 +3,7 @@
 # depthSV — build the depth matrix from per-sample mosdepth region files
 #
 #   scripts/join.sh --manifest FILE --out DIR [--jobs N] [--threads N]
-#                   [--batch-size N|auto] [--strict-coords] [--force]
+#                   [--batch-size N|auto] [--force]
 #
 # Output:
 #   <out>/depth.matrix.txt.gz      bgzip-compressed, tabix-indexed
@@ -16,11 +16,15 @@
 #   repeated whole-genome decompression from the correction stage and makes an
 #   arbitrary interval a valid unit of work on any scheduler.
 #
-#   Row counts are verified, inside each extraction worker.  paste() aligns by
-#   position and cannot detect that one sample was processed against a
-#   different contig set; the offending sample's depths would simply be
-#   attributed to the wrong coordinates. A mismatch stops the run at the
-#   offending sample, not at the end.
+#   Row counts AND coordinates are verified, inside each extraction worker.
+#   paste() aligns by position and cannot detect that one sample was processed
+#   against a different contig set or bin order; the offending sample's depths
+#   would simply be attributed to the wrong coordinates. The coordinate
+#   checksum costs nothing (same decompression pass), so it is always on, and
+#   a mismatch stops the run at the offending sample, not at the end.
+#
+#   A finished matrix is reused only for the same manifest CONTENT: adding a
+#   sample and re-running rebuilds it rather than serving the old columns.
 #
 #   The work is batched, parallel and resumable.  Columns are extracted
 #   --jobs at a time and pasted in batches; each finished batch is compressed
@@ -37,7 +41,7 @@ dsv_enable_error_trace
 
 manifest="${DSV_MANIFEST:-}"; out_dir="${DSV_JOIN_DIR:-}"
 threads="${DSV_THREADS:-4}"; jobs="${DSV_JOBS:-4}"
-batch_size="${DSV_BATCH_SIZE:-auto}"; strict_coords=0; force=0
+batch_size="${DSV_BATCH_SIZE:-auto}"; force=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -46,7 +50,7 @@ while [ $# -gt 0 ]; do
         --jobs)          jobs="$2"; shift 2 ;;
         --threads)       threads="$2"; shift 2 ;;
         --batch-size)    batch_size="$2"; shift 2 ;;
-        --strict-coords) strict_coords=1; shift ;;   # full coordinate checksum
+        --strict-coords) shift ;;                    # now always on; accepted for compatibility
         --force)         force=1; shift ;;
         -h|--help)       dsv_usage ;;
         *)               dsv_die "unknown argument: $1" ;;
@@ -55,8 +59,9 @@ done
 
 dsv_require_opt manifest out_dir
 dsv_require_file "$manifest"
-dsv_require_cmd bgzip tabix paste awk parallel mkfifo
+# Modules first: on a cluster the tools may only exist after `module load`.
 dsv_load_modules
+dsv_require_cmd bgzip tabix paste awk parallel mkfifo
 
 mkdir -p "$out_dir"
 # Absolute from here on: the batch step cds into the column directory, and a
@@ -65,30 +70,41 @@ out_dir="$(cd "$out_dir" && pwd)"
 final="$out_dir/depth.matrix.txt.gz"
 work="$out_dir/.join.work"
 
-if [ "$force" -eq 0 ] && dsv_output_complete "$final"; then
-    dsv_log "already complete, skipping: $final"
-    exit 0
-fi
-if [ "$force" -eq 1 ]; then
-    rm -rf "$work"
-    rm -f "$(dsv_output_done "$final")"
-fi
-dsv_output_reset "$final"
-
 # --- plan the batches -------------------------------------------------------
 
 n_samples="$(grep -c . "$manifest" || true)"
 [ "$n_samples" -gt 0 ] || dsv_die "manifest contains no paths"
 
+# The signature of this join: the manifest's content (not just its path — a
+# grown cohort re-using the old output is exactly the failure this prevents),
+# the batching, and the scripts. Checked before any skip.
+manifest_sig="$(cksum < "$manifest" | awk '{print $1"-"$2}')"
+sig="$(printf 'stage=join\nmanifest=%s\nsamples=%s\nscript=%s\nworker=%s' \
+       "$manifest_sig" "$n_samples" "$(dsv_script_sig "$0")" "$(dsv_script_sig "$DSV_ROOT/lib/join_extract.sh")")"
+
+if [ "$force" -eq 0 ] && dsv_output_complete "$final" "$sig"; then
+    dsv_log "already complete, skipping: $final"
+    exit 0
+fi
+if [ "$force" -eq 1 ]; then rm -rf "$work"; fi
+dsv_output_reset "$final" "$force"
+
 # Duplicate names would become duplicate matrix columns and every later stage
-# matches samples by name, so refuse them before any heavy work.
-dup="$(
-    while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        dsv_sample_name "$f"
-    done < "$manifest" | sort | uniq -d | head -3
-)"
-[ -z "$dup" ] || dsv_die "duplicate sample name(s) in the manifest after suffix stripping: $(printf '%s' "$dup" | tr '\n' ' ')"
+# matches samples by name, so refuse them before any heavy work. The list is
+# written to a file rather than piped into `head`, which would kill `uniq`
+# with SIGPIPE (exit 141, no message) on a long duplicate list.
+mkdir -p "$out_dir"
+dup_file="$out_dir/.dsv.dups.$$"
+while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    dsv_sample_name "$f"
+done < "$manifest" | sort | uniq -d > "$dup_file"
+if [ -s "$dup_file" ]; then
+    dup="$(head -3 "$dup_file" | tr '\n' ' ')"
+    rm -f "$dup_file"
+    dsv_die "duplicate sample name(s) in the manifest after suffix stripping: $dup"
+fi
+rm -f "$dup_file"
 
 if [ "$batch_size" = "auto" ]; then
     # sqrt(N) balances the two file-count ceilings: each batch paste opens
@@ -109,9 +125,8 @@ dsv_log "joining $n_samples samples into $out_dir ($n_batches batches of <=$batc
 # A previous partial run can be resumed only if it was cut from the same
 # manifest into the same batches; otherwise the leftovers are meaningless.
 
-manifest_sig="$(cksum < "$manifest" | awk '{print $1"-"$2}')"
 resume_meta="$work/resume.meta"
-wanted_meta="$(printf 'manifest\t%s\nbatch_size\t%s\nstrict\t%s\n' "$manifest_sig" "$batch_size" "$strict_coords")"
+wanted_meta="$(printf 'manifest\t%s\nbatch_size\t%s\n' "$manifest_sig" "$batch_size")"
 
 if [ -f "$resume_meta" ] && [ "$(cat "$resume_meta")" = "$wanted_meta" ]; then
     dsv_log "resuming: $(ls "$work" | grep -c '\.done$' || true) of $n_batches batches already finished"
@@ -188,16 +203,17 @@ for list in "$work"/batch.*.list; do
     # -q makes parallel re-quote the command tokens it composes, so paths
     # survive intact; replacement strings are still substituted.
     parallel -q --colsep '\t' -j "$jobs" --halt now,fail=1 \
-        bash "$DSV_ROOT/lib/join_extract.sh" '{1}' '{2}' "$work" "$strict_coords" "$ref_rows" \
+        bash "$DSV_ROOT/lib/join_extract.sh" '{1}' '{2}' "$work" "$ref_rows" \
         :::: "$list"
 
-    if [ "$strict_coords" -eq 1 ]; then
-        [ -n "$ref_sig" ] || ref_sig="$(cat "$work"/meta/000001_*.sig)"
-        for sig_file in $(ls "$work/meta" | awk -F_ -v lo="$lo" -v hi="$hi" '/\.sig$/ && $1+0 >= lo && $1+0 <= hi'); do
-            sig="$(cat "$work/meta/$sig_file")"
-            [ "$sig" = "$ref_sig" ] || dsv_die "$(basename "$sig_file" .sig | cut -d_ -f2-) has the same row count but different coordinates (signature $sig vs $ref_sig)"
-        done
-    fi
+    # Every sample's coordinate columns must checksum like the first sample's:
+    # the same bins in a different order have the same row count and would
+    # paste cleanly into misattributed coordinates.
+    [ -n "$ref_sig" ] || ref_sig="$(cat "$work"/meta/000001_*.sig)"
+    for sig_file in $(ls "$work/meta" | awk -F_ -v lo="$lo" -v hi="$hi" '/\.sig$/ && $1+0 >= lo && $1+0 <= hi'); do
+        this_sig="$(cat "$work/meta/$sig_file")"
+        [ "$this_sig" = "$ref_sig" ] || dsv_die "$(basename "$sig_file" .sig | cut -d_ -f2-) has the same row count but different coordinates (signature $this_sig vs $ref_sig)"
+    done
 
     if [ -n "$paste_pid" ]; then
         wait "$paste_pid" || dsv_die "batch paste failed"
@@ -237,12 +253,17 @@ done
 bg_pids=""
 
 # Every row must carry a coordinate triple plus one value per sample. A short
-# row here means paste ran out of input for some column.
+# row here means paste ran out of input for some column. awk stops at the
+# first bad row, which kills the decompressor with SIGPIPE — so pipefail is
+# lifted for this one assignment, or the check itself would abort the script
+# before it could say which row was wrong.
 expected_cols=$(( 3 + n_samples ))
+set +o pipefail
 bad=$(bgzip -dc "$(dsv_output_tmp "$final")" | awk -F'\t' -v e="$expected_cols" 'NF != e {print NR; exit}')
+set -o pipefail
 [ -z "$bad" ] || dsv_die "row $bad does not have $expected_cols columns"
 
-dsv_output_commit "$final" "$ref_rows"
+dsv_output_commit "$final" "$ref_rows" "$sig"
 
 # --- manifest --------------------------------------------------------------
 
@@ -256,7 +277,7 @@ dsv_output_commit "$final" "$ref_rows"
     printf 'samples\t%s\n' "$n_samples"
     printf 'regions\t%s\n' "$ref_rows"
     printf 'coordinate_source\t%s\n' "$(dsv_sample_name "$first_file")"
-    if [ "$strict_coords" -eq 1 ]; then printf 'coordinate_signature\t%s\n' "$ref_sig"; fi
+    printf 'coordinate_signature\t%s\n' "$ref_sig"
     printf '#\n# sample\tregions\tsource\n'
     cat "$work/rowcounts.txt"
 } > "$out_dir/depth.matrix.manifest"

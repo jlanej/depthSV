@@ -1,0 +1,19 @@
+[done] processed=20 samples=500000 ndim=200
+       32.53 real        31.19 user         1.27 sys
+         11420975104  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+              889815  page reclaims
+                  29  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+                   6  voluntary context switches
+                1340  involuntary context switches
+        224644427599  instructions retired
+        100787436058  cycles elapsed
+         11405092200  peak memory footprint

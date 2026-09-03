@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>depthSV</title>
+<meta name="description" content="depthSV tests the sequencing read depth of every genomic bin against phenotypes at biobank scale: a technical correction whose components stay in the model, and permutation-calibrated genome-wide thresholds.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Source+Sans+3:ital,wght@0,400;0,600;1,400&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  :root {
+    --ground: #f4f6f9;
+    --surface: #ffffff;
+    --ink: #17212b;
+    --muted: #5a6572;
+    --rule: #d8dee6;
+    --accent: #1f4e79;
+    --accent-ink: #ffffff;
+    --accent-soft: #e4edf6;
+    --warm: #a8560f;
+    --warm-soft: #f6e9dc;
+    --code-bg: #eaeff4;
+    --shadow: 0 1px 2px rgba(23,33,43,.06), 0 8px 24px rgba(23,33,43,.06);
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --ground: #0e141b;
+      --surface: #151d26;
+      --ink: #e5eaf0;
+      --muted: #98a4b2;
+      --rule: #29343f;
+      --accent: #8dbdea;
+      --accent-ink: #0e141b;
+      --accent-soft: #1b2a3a;
+      --warm: #f0b268;
+      --warm-soft: #2e2519;
+      --code-bg: #1b2530;
+      --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35);
+      color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ground: #0e141b; --surface: #151d26; --ink: #e5eaf0; --muted: #98a4b2; --rule: #29343f;
+    --accent: #8dbdea; --accent-ink: #0e141b; --accent-soft: #1b2a3a; --warm: #f0b268; --warm-soft: #2e2519;
+    --code-bg: #1b2530; --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.35); color-scheme: dark;
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+  body {
+    margin: 0; background: var(--ground); color: var(--ink);
+    font-family: "Source Sans 3", "Segoe UI", system-ui, -apple-system, sans-serif;
+    font-size: 17px; line-height: 1.6;
+  }
+  a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--warm); outline-offset: 2px; }
+  code, pre, kbd { font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace; }
+  code { background: var(--code-bg); padding: .1em .35em; border-radius: 3px; font-size: .88em; }
+  pre { background: var(--code-bg); padding: .9rem 1rem; border-radius: 6px; overflow-x: auto; font-size: .86em; line-height: 1.5; }
+  pre code { background: none; padding: 0; font-size: 1em; }
+  h1, h2, h3 { font-family: "Fraunces", Georgia, "Times New Roman", serif; font-weight: 600; line-height: 1.15; text-wrap: balance; letter-spacing: -.005em; }
+  h1 { font-size: clamp(2.4rem, 5vw, 3.6rem); margin: 0 0 .5rem; }
+  h2 { font-size: 1.85rem; margin: 3.2rem 0 .8rem; }
+  h3 { font-size: 1.25rem; margin: 2rem 0 .5rem; }
+  p, li { max-width: 72ch; }
+  .eyebrow { font-size: .78rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); font-weight: 600; }
+  .lede { font-size: 1.22rem; line-height: 1.5; max-width: 60ch; color: var(--ink); }
+  .muted { color: var(--muted); }
+
+  header.hero { background: var(--surface); border-bottom: 1px solid var(--rule); }
+  .hero-inner { max-width: 1120px; margin: 0 auto; padding: 3.2rem 1.5rem 2.4rem; }
+  .hero-links { display: flex; flex-wrap: wrap; gap: .6rem 1.2rem; margin-top: 1.4rem; font-size: .95rem; }
+  .hero-links a.primary { background: var(--accent); color: var(--accent-ink); text-decoration: none; padding: .45rem .9rem; border-radius: 6px; font-weight: 600; }
+
+  .layout { max-width: 1120px; margin: 0 auto; padding: 0 1.5rem 4rem; display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 3rem; }
+  nav.toc { position: sticky; top: 1.2rem; align-self: start; font-size: .92rem; padding-top: 2.6rem; }
+  nav.toc ol { list-style: none; padding: 0; margin: 0; border-left: 2px solid var(--rule); }
+  nav.toc li a { display: block; padding: .28rem .8rem; color: var(--muted); text-decoration: none; border-left: 2px solid transparent; margin-left: -2px; }
+  nav.toc li a:hover { color: var(--ink); border-left-color: var(--accent); }
+  nav.toc .toc-head { font-size: .78rem; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 0 0 .5rem .8rem; font-weight: 600; }
+  @media (max-width: 960px) { .layout { grid-template-columns: 1fr; gap: 0; } nav.toc { position: static; padding-top: 1.5rem; } nav.toc ol { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); border-left: 0; gap: 0 1rem; } nav.toc li a { border-left: 0; padding-left: 0; margin-left: 0; } }
+
+  main section { scroll-margin-top: 1rem; }
+  .glance { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 1rem; margin: 1.6rem 0 0; }
+  .card { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 1rem 1.1rem; box-shadow: var(--shadow); }
+  .card .eyebrow { margin-bottom: .3rem; }
+  .card p { margin: .2rem 0 0; font-size: .97rem; }
+
+  figure { margin: 1.6rem 0; }
+  figure.diagram { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 1rem; overflow-x: auto; }
+  figcaption { font-size: .9rem; color: var(--muted); margin-top: .6rem; max-width: 72ch; }
+  svg text { font-family: "Source Sans 3", system-ui, sans-serif; }
+  svg .mono { font-family: "JetBrains Mono", ui-monospace, monospace; }
+
+  table { border-collapse: collapse; width: 100%; font-size: .95rem; margin: 1rem 0; }
+  .tablewrap { overflow-x: auto; }
+  th, td { text-align: left; padding: .5rem .7rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+  th { font-weight: 600; color: var(--muted); font-size: .85rem; letter-spacing: .04em; text-transform: uppercase; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+  .math { font-family: "Fraunces", Georgia, serif; font-size: 1.08em; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: .8rem 1rem; margin: 1rem 0; overflow-x: auto; white-space: nowrap; }
+  .math i { font-style: italic; }
+  .callout { border-left: 4px solid var(--accent); background: var(--accent-soft); padding: .8rem 1rem; border-radius: 0 6px 6px 0; margin: 1.2rem 0; }
+  .callout.warm { border-left-color: var(--warm); background: var(--warm-soft); }
+  .callout p { margin: .2rem 0; }
+  dl.defs dt { font-weight: 600; margin-top: .8rem; }
+  dl.defs dd { margin: .15rem 0 0 0; max-width: 72ch; }
+  ol.refs { padding-left: 1.4rem; font-size: .95rem; }
+  ol.refs li { margin-bottom: .45rem; max-width: 80ch; }
+  footer { border-top: 1px solid var(--rule); color: var(--muted); font-size: .9rem; padding: 1.6rem 0 0; margin-top: 3rem; }
+</style>
+</head>
+<body>
+
+<header class="hero">
+  <div class="hero-inner">
+    <div class="eyebrow">Read-depth association at biobank scale</div>
+    <h1>depthSV</h1>
+    <p class="lede">Every genomic bin's sequencing depth is a copy-number dosage. depthSV tests that dosage against phenotypes across a cohort without calling variants first: a technical correction whose components stay in the association model, a ploidy model for the sex chromosomes, and genome-wide thresholds calibrated by permutation rather than assumed.</p>
+    <div class="hero-links">
+      <a class="primary" href="https://github.com/jlanej/depthSV">Source on GitHub</a>
+      <a href="https://github.com/jlanej/depthSV#quickstart">Quickstart</a>
+      <a href="https://github.com/jlanej/depthSV/blob/main/REVIEW.md">Methods review</a>
+      <a href="https://github.com/jlanej/depthSV/tree/main/example/1000G_highcov">Worked example (1000 Genomes)</a>
+    </div>
+  </div>
+</header>
+
+<div class="layout">
+<nav class="toc" aria-label="Contents">
+  <p class="toc-head">Contents</p>
+  <ol>
+    <li><a href="#glance">At a glance</a></li>
+    <li><a href="#why">Why read depth</a></li>
+    <li><a href="#pipeline">The pipeline</a></li>
+    <li><a href="#join">Join</a></li>
+    <li><a href="#correct">Correction</a></li>
+    <li><a href="#analyze">Association</a></li>
+    <li><a href="#threshold">Genome-wide significance</a></li>
+    <li><a href="#outputs">Outputs and findings</a></li>
+    <li><a href="#calibration">Calibration and checks</a></li>
+    <li><a href="#deploy">Running it</a></li>
+    <li><a href="#limits">Limitations</a></li>
+    <li><a href="#cite">Citation</a></li>
+    <li><a href="#refs">References</a></li>
+  </ol>
+</nav>
+
+<main>
+
+<section id="glance">
+  <h2>At a glance</h2>
+  <div class="glance">
+    <div class="card"><div class="eyebrow">Input</div><p>One <code>mosdepth</code> regions file per sample (fixed bins, typically 1 kb), a table of coverage principal components, per-sample median coverage, a phenotype table, and optionally sex.</p></div>
+    <div class="card"><div class="eyebrow">Unit of work</div><p>A genomic region. Every stage after the join takes <code>--region chr1:1-10000000</code>, reads it through the index, and writes one shard. A SLURM array, a WDL scatter and a local loop dispatch the same scripts.</p></div>
+    <div class="card"><div class="eyebrow">Test</div><p>Per bin: linear, logistic or Cox regression of the phenotype on corrected depth, with covariates and the removed PCs in the model. One matrix product per block for the linear path.</p></div>
+    <div class="card"><div class="eyebrow">Output</div><p>Per bin: estimate, standard error, statistic, p, a single-sample leverage share. Per analysis: an exported table, an empirical family-wise threshold, hits with adjusted p, and provenance.</p></div>
+  </div>
+</section>
+
+<section id="why">
+  <h2>Why read depth</h2>
+  <p>A deletion halves the number of reads that land on it; a duplication adds half again. Sequencing depth is therefore a direct, quantitative readout of copy number at every position of the genome, and it is available for every sample in a sequenced cohort at no extra cost. Copy-number variants account for more base pairs of difference between two genomes than any other variant class, yet most association studies have tested them only after a calling step that decides, per sample, whether a variant is present.</p>
+  <p>Calling is where the difficulty lives. Breakpoints vary, alleles overlap, multiallelic and mosaic events resist a discrete genotype, and every caller has its own sensitivity profile. Recent work in the UK Biobank turned this around: genotyping copy number from read depth in 5-kb bins across 490,000 genomes and testing those genotypes phenome-wide found that three quarters of the signals were strongest under a plain additive model, and that read depth at 30× is accurate for events of 5 kb and larger across the whole frequency spectrum, including multiallelic repeats and somatic mosaics.<sup><a href="#ref-garg">1</a></sup> An independent phenome-wide analysis of the same cohort with called CNVs excluded events under 10 kb and the sex chromosomes entirely, citing variable ploidy.<sup><a href="#ref-nature">2</a></sup></p>
+  <p>depthSV takes the additive model one step further and tests the continuous dosage itself. No genotype clustering, no size floor beyond the bin, and the sex chromosomes stay in through an explicit ploidy model. Two things have to be right for that to work, and they are the substance of the method:</p>
+  <ul>
+    <li><strong>Technical structure.</strong> Depth varies with GC content, library preparation, sequencing batch and mapping. Read-depth callers have long removed the leading principal components of the depth matrix to absorb this,<sup><a href="#ref-xhmm">3</a>,<a href="#ref-conifer">4</a></sup> and have long known that removing too many also removes real copy-number variation. depthSV keeps the removed components inside the association model, where the algebra requires them, and measures how many to remove against known deletions.</li>
+    <li><strong>Calibrated inference over millions of correlated tests.</strong> Bins are not independent, the null is not exactly normal, and a fixed 5 × 10⁻⁸ answers a question about SNPs. depthSV derives its threshold from permutations of the same data, with Bonferroni reported beside it.</li>
+  </ul>
+</section>
+
+<section id="pipeline">
+  <h2>The pipeline</h2>
+  <figure class="diagram">
+    <svg viewBox="0 0 900 250" width="100%" role="img" aria-labelledby="pipe-title">
+      <title id="pipe-title">Four stages: join, correct, analyze, export</title>
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--muted)"/>
+        </marker>
+      </defs>
+      <!-- inputs -->
+      <g>
+        <rect x="10" y="30" width="150" height="70" rx="6" fill="var(--code-bg)" stroke="var(--rule)"/>
+        <text x="85" y="58" text-anchor="middle" font-size="14" fill="var(--ink)" font-weight="600">per-sample depth</text>
+        <text x="85" y="78" text-anchor="middle" font-size="12" fill="var(--muted)" class="mono">*.regions.bed.gz</text>
+      </g>
+      <!-- stage boxes -->
+      <g>
+        <rect x="200" y="20" width="150" height="90" rx="8" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="275" y="45" text-anchor="middle" font-size="11" fill="var(--muted)" letter-spacing="1.5">1 · ONCE</text>
+        <text x="275" y="68" text-anchor="middle" font-size="16" fill="var(--ink)" font-weight="600">join</text>
+        <text x="275" y="90" text-anchor="middle" font-size="12" fill="var(--muted)">bins × samples, indexed</text>
+      </g>
+      <g>
+        <rect x="390" y="20" width="150" height="90" rx="8" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="465" y="45" text-anchor="middle" font-size="11" fill="var(--muted)" letter-spacing="1.5">2 · PER REGION</text>
+        <text x="465" y="68" text-anchor="middle" font-size="16" fill="var(--ink)" font-weight="600">correct</text>
+        <text x="465" y="90" text-anchor="middle" font-size="12" fill="var(--muted)">log₂ ratio, ploidy, − PCs</text>
+      </g>
+      <g>
+        <rect x="580" y="20" width="150" height="90" rx="8" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="655" y="45" text-anchor="middle" font-size="11" fill="var(--muted)" letter-spacing="1.5">3 · PER REGION × TRAIT</text>
+        <text x="655" y="68" text-anchor="middle" font-size="16" fill="var(--ink)" font-weight="600">analyze</text>
+        <text x="655" y="90" text-anchor="middle" font-size="12" fill="var(--muted)">regression + permutations</text>
+      </g>
+      <g>
+        <rect x="770" y="20" width="120" height="90" rx="8" fill="var(--surface)" stroke="var(--accent)" stroke-width="1.5"/>
+        <text x="830" y="45" text-anchor="middle" font-size="11" fill="var(--muted)" letter-spacing="1.5">4 · ONCE</text>
+        <text x="830" y="68" text-anchor="middle" font-size="16" fill="var(--ink)" font-weight="600">export</text>
+        <text x="830" y="90" text-anchor="middle" font-size="12" fill="var(--muted)">threshold, hits</text>
+      </g>
+      <!-- arrows -->
+      <line x1="160" y1="65" x2="198" y2="65" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <line x1="350" y1="65" x2="388" y2="65" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <line x1="540" y1="65" x2="578" y2="65" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <line x1="730" y1="65" x2="768" y2="65" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#arrow)"/>
+      <!-- side inputs -->
+      <g>
+        <rect x="390" y="150" width="150" height="56" rx="6" fill="var(--code-bg)" stroke="var(--rule)"/>
+        <text x="465" y="172" text-anchor="middle" font-size="13" fill="var(--ink)">coverage PCs, medians,</text>
+        <text x="465" y="192" text-anchor="middle" font-size="13" fill="var(--ink)">sex, PAR</text>
+        <line x1="465" y1="150" x2="465" y2="112" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#arrow)"/>
+      </g>
+      <g>
+        <rect x="580" y="150" width="150" height="56" rx="6" fill="var(--code-bg)" stroke="var(--rule)"/>
+        <text x="655" y="172" text-anchor="middle" font-size="13" fill="var(--ink)">phenotypes, covariates,</text>
+        <text x="655" y="192" text-anchor="middle" font-size="13" fill="var(--ink)">the same PCs</text>
+        <line x1="655" y1="150" x2="655" y2="112" stroke="var(--muted)" stroke-width="1.5" marker-end="url(#arrow)"/>
+      </g>
+      <text x="275" y="180" text-anchor="middle" font-size="13" fill="var(--muted)">every finished unit is signed by its</text>
+      <text x="275" y="198" text-anchor="middle" font-size="13" fill="var(--muted)">inputs and parameters; a rerun redoes</text>
+      <text x="275" y="216" text-anchor="middle" font-size="13" fill="var(--muted)">only what changed</text>
+    </svg>
+    <figcaption>The join runs once per cohort. Correction and association take a region each, so a preempted job costs one region, and a cluster array, a cloud scatter and a laptop loop all call the same scripts. The export folds the shards into a result.</figcaption>
+  </figure>
+  <p>Each stage writes to a temporary file, verifies it, indexes it and only then moves it into place with a marker that records every input's identity, every parameter and the driver's own checksum. A rerun with the same inputs skips the unit; a rerun after a changed coverage table, model or version redoes it and says which line differed.</p>
+</section>
+
+<section id="join">
+  <h2>1 · Join</h2>
+  <p>The join turns one file per sample into one matrix per cohort: bins as rows, samples as columns, bgzip-compressed and tabix-indexed so that any later stage can read a region without scanning the file. Every sample's bin coordinates are checksummed during extraction and must agree with every other sample's; a file built on different intervals, or the same intervals in a different order, is refused rather than pasted into the wrong rows. A sample listed twice is refused before anything is written. The result does not depend on batching or the number of workers.</p>
+  <p>At biobank width the whole matrix is terabytes and no cloud task should copy it. The block form joins about a thousand samples at a time into indexed block matrices; a per-window task then reads its region from every block through the index and pastes the cohort-wide slice for that window alone. The pasted window is byte-identical to the same region of a monolithic join.</p>
+</section>
+
+<section id="correct">
+  <h2>2 · Correction</h2>
+  <p>For bin <i>i</i> and sample <i>j</i>, with depth <i>d</i><sub><i>ij</i></sub>, the sample's autosomal median coverage <i>m</i><sub><i>j</i></sub>, and the expected number of copies <i>c</i><sub><i>ij</i></sub> of that bin in that sample:</p>
+  <div class="math"><i>r</i><sub><i>ij</i></sub> = max( log₂ [ max(<i>d</i><sub><i>ij</i></sub>, δ) / (<i>m</i><sub><i>j</i></sub> · <i>c</i><sub><i>ij</i></sub> / 2) ] , −3 )</div>
+  <p>A diploid bin at the sample's typical depth sits at 0; one lost copy at −1; a gained copy at +0.58. The floor at −3 (a parameter) keeps a zero-depth sample, a homozygous deletion or a mapping gap, from carrying a bin's whole leverage. The expected copies are the ploidy model:</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Bin</th><th>Female</th><th>Male</th><th>Unknown sex</th></tr></thead>
+    <tbody>
+      <tr><td>autosome, chrM, pseudo-autosomal region</td><td>2</td><td>2</td><td>2</td></tr>
+      <tr><td>chrX outside the PARs</td><td>2</td><td>1</td><td>missing</td></tr>
+      <tr><td>chrY outside the PARs</td><td>missing</td><td>1</td><td>missing</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Without the model every sex-chromosome bin is a sex indicator and dominates any phenotype that correlates with sex. With it, a female's chrY is missing rather than the logarithm of nothing, and later stages fit those bins on the samples that have them. Callers such as GATK-gCNV and CNVkit apply the same idea by inferring contig ploidy or doubling male X coverage.<sup><a href="#ref-gcnv">5</a></sup></p>
+  <h3>Removing technical structure</h3>
+  <p>The leading principal components of the depth matrix, computed upstream over the autosomes, capture batch, GC and library effects. The corrected value is the residual of <i>r</i> against the first <i>k</i> of them:</p>
+  <div class="math"><i>r̃</i> = (<i>I</i> − <i>QQ</i><sup>T</sup>) <i>r</i>,   <i>Q</i> = orthonormal basis of [1, PC₁ … PC<sub><i>k</i></sub>]</div>
+  <p>The basis is factorised once per region and every worker reuses it, so a region costs two matrix products. This is the projection <code>qr.resid</code> computes, an order of magnitude faster at width. A bin that is missing for some samples is projected on the complete subset with a basis refactorised for that subset, and that subset is the same for every such bin, so the refactorisation is cached.</p>
+  <div class="callout warm">
+    <p><strong>How many components.</strong> The Marchenko–Pastur or Tracy–Widom count says how many components stand out from noise.<sup><a href="#ref-patterson">6</a></sup> That is an upper bound on what should be removed, not the answer: the components that carry real copy-number variation sit inside the removed set once <i>k</i> is large enough, and a correction that absorbs the deletions it is meant to expose is worse than one that leaves some batch structure in. The recommended procedure corrects a set of known deletions at several values of <i>k</i> and compares carriers with non-carriers on the corrected depth (AUC, log₂ shift). Recovery plateaus, then erodes; take the start of the plateau. The worked example implements this against the 1000 Genomes SV callset.</p>
+  </div>
+</section>
+
+<section id="analyze">
+  <h2>3 · Association</h2>
+  <p>Per bin, the model is a regression of the phenotype <i>y</i> on the corrected depth with covariates <i>Z</i> and the same <i>k</i> coverage PCs the correction removed:</p>
+  <div class="math"><i>y</i> = α + β <i>r̃</i> + <i>Z</i>γ + Σ<sub><i>l</i>≤<i>k</i></sub> θ<sub><i>l</i></sub> PC<sub><i>l</i></sub> + ε</div>
+  <div class="callout">
+    <p><strong>The PCs belong in the model.</strong> Residualising depth against PC₁…PC<sub><i>k</i></sub> and then testing without them deflates every test by roughly 1 − <i>R</i>²(<i>y</i> ~ PCs), and biases any bin correlated with a covariate that itself correlates with a PC, which is every sex-chromosome bin once sex is a covariate. With the PCs on both sides the projection is identical on both sides and the Frisch–Waugh–Lovell theorem makes the test exact. In simulation this moves λ from 0.51 or 1.81 to 0.99. The analysis stage therefore refuses to run a PC-corrected matrix without the PC table.</p>
+  </div>
+  <dl class="defs">
+    <dt>Linear</dt>
+    <dd>The design [1, <i>Z</i>, PCs] is factorised once per worker. The phenotype is projected on its orthogonal complement once; a whole block of bins is projected with one matrix product; and β̂ = ⟨<i>r̃</i><sub>⊥</sub>, <i>y</i><sub>⊥</sub>⟩ / ‖<i>r̃</i><sub>⊥</sub>‖² with the residual degrees of freedom of the full model. This agrees with <code>lm()</code> to 10⁻¹⁴ and is what makes a genome-wide sweep one matrix product per block rather than one fit per bin. Options: a rank-based inverse-normal transform of the response, which protects type I error and power for non-normal traits,<sup><a href="#ref-mccaw">7</a></sup> and heteroskedasticity-robust (HC1) standard errors.</dd>
+    <dt>Logistic</dt>
+    <dd>The design is built once and only the depth column changes, so each bin is the same IRLS <code>glm()</code> would run. Under complete separation the Wald statistic collapses toward zero (Hauck–Donner), so the likelihood-ratio p-value and a convergence flag are reported beside it; the null deviance is computed once. A binary response must be coded 0/1, TRUE/FALSE, or as two labels with the case named explicitly; other codings are refused rather than guessed, and phenotypes with fewer than 20 cases or controls are refused up front.</dd>
+    <dt>Cox</dt>
+    <dd>Per bin with <code>coxph()</code>, the PCs added to the formula, a convergence flag, and robust variance on request.</dd>
+    <dt>Per-bin quality control</dt>
+    <dd>A bin is skipped when fewer than <code>--min-obs</code> samples have it, when its depth does not vary, or when one sample carries more than <code>--max-share</code> (default one half) of the residualised depth's sum of squares. That share, <code>MAXSHARE</code>, is reported on every row. It is the read-depth analogue of a minor allele count of one: a test carried by one participant. At 3,000 samples a single heterozygous deletion carrier is kept; a single sample three log₂ units from everyone else is not.</dd>
+    <dt>Missing samples</dt>
+    <dd>A bin whose depth is missing for some samples, chrY in females under the ploidy model, is fitted on the samples that have it with the design refactorised for that subset. Nothing is imputed.</dd>
+  </dl>
+</section>
+
+<section id="threshold">
+  <h2>Genome-wide significance</h2>
+  <p>With a million or more bins, adjacent ones correlated, and a null that is only approximately normal, the effective number of tests is unknown and a borrowed SNP threshold is a guess. The linear path being a projection makes the honest alternative cheap. For each of <i>B</i> permutations the analysis stage permutes the covariate-adjusted response, projects it again (the Freedman–Lane scheme, which controls error rates well in the presence of nuisance covariates<sup><a href="#ref-winkler">8</a></sup>), computes every bin's statistic with one extra matrix product per block, and keeps the largest |<i>t</i>| in the shard. Every shard uses the same seed, so the shard maxima fold into one genome-wide maximum per permutation.</p>
+  <p>The export step then reports, at level α:</p>
+  <ul>
+    <li>the <strong>empirical family-wise threshold</strong>: the <i>k</i>-th largest permutation maximum with <i>k</i> = ⌊α(<i>B</i>+1)⌋ (Westfall–Young max-T),<sup><a href="#ref-wy">9</a></sup> so <i>B</i> ≥ 19 at α = 0.05, and the p-value it corresponds to;</li>
+    <li>the <strong>effective number of tests</strong> that threshold implies, <i>M</i><sub>eff</sub> = log(1 − α) / log(1 − <i>p</i><sub>thr</sub>), for comparison with the bin count;</li>
+    <li>the <strong>Bonferroni</strong> threshold beside it, and the hits at each, every hit carrying its adjusted p, (1 + #{maxima ≥ |<i>t</i>|}) / (<i>B</i> + 1).</li>
+  </ul>
+  <p>The permutation statistic is the classical <i>t</i>; the robust option changes the reported standard error, not the permutation distribution. Cost is one extra product of a bins × samples block with a samples × <i>B</i> matrix. Measured single-threaded at 50,000 samples, 100 permutations cost about as much as the projection itself and 500 about four times it, against a parse step that dominates both; at 500,000 samples the permuted responses occupy 0.4 GB per worker at <i>B</i> = 100 and 2 GB at <i>B</i> = 500. A few hundred permutations suits cohorts of thousands; at biobank width 100 is the sensible default and the Bonferroni line is always reported.</p>
+</section>
+
+<section id="outputs">
+  <h2>Outputs and what a finding looks like</h2>
+  <p>One row per tested bin per analysis, bgzip-compressed and indexed, with the columns below. The export concatenates shards in genome order over the whole region list, refuses to proceed if any region has no finished shard, and drops rows whose counts fall below a floor (20 by default, the All of Us dissemination limit).</p>
+  <div class="tablewrap">
+  <table>
+    <thead><tr><th>Column</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>#CHROM START END Region</code></td><td>the bin</td></tr>
+      <tr><td><code>N NCase NControl</code></td><td>samples the bin was tested on; cases and controls for logistic and Cox</td></tr>
+      <tr><td><code>BETA</code></td><td>effect per unit of corrected depth, that is per log₂ ratio: a heterozygous deletion is about −1, a duplication about +0.58, so a trait shift per lost copy is −BETA</td></tr>
+      <tr><td><code>SE STAT P LOG10P</code></td><td>standard error, <i>t</i> or <i>z</i>, p, and −log₁₀ p computed in log space so it never underflows</td></tr>
+      <tr><td><code>HR</code>, <code>LRT_P</code>, <code>CONVERGED</code></td><td>hazard ratio (Cox); likelihood-ratio p and convergence flag (logistic, Cox)</td></tr>
+      <tr><td><code>MAXSHARE</code></td><td>largest share of the residual depth carried by one sample</td></tr>
+    </tbody>
+  </table>
+  </div>
+  <p>Per analysis the export adds a summary (λ, thresholds, <i>M</i><sub>eff</sub>, counts suppressed, the pipeline version, R and htslib versions) and a hits table. Because every bin is tested, a real event appears as a run of adjacent significant bins spanning its extent, with the effect flat across the run; the correction statistics written per region give the pre- and post-correction spread of each bin for inspection.</p>
+  <h3>Classes of result</h3>
+  <ul>
+    <li><strong>Common dosage effects.</strong> A deletion or duplication segregating at a few percent whose carriers shift a quantitative trait: the additive model that carried three quarters of the signals in the UK Biobank read-depth study.<sup><a href="#ref-garg">1</a></sup></li>
+    <li><strong>Multiallelic and repeat loci.</strong> Amylase, mucin and defensin copy number vary over many states; a continuous dosage test uses all of them at once, where a biallelic genotype cannot.</li>
+    <li><strong>Mosaic and somatic events.</strong> Clonal deletions present in a fraction of cells show as fractional dosage in the samples that carry them, visible to depth and invisible to genotype-based tests.</li>
+    <li><strong>Sex-chromosome events</strong> under the ploidy model, which most published scans exclude.</li>
+    <li><strong>Artefacts to expect.</strong> Nuclear insertions of mitochondrial sequence attract mitochondrial reads and track mitochondrial copy number; low-mappability regions track library properties. The single-sample share, the permuted and structured nulls, and the pre/post correction statistics are the tools for telling these apart.</li>
+  </ul>
+  <p>Not visible by construction: balanced rearrangements, events well below the bin size, and effects that are not monotone in copy number.</p>
+</section>
+
+<section id="calibration">
+  <h2>Calibration and checks</h2>
+  <p>A sweep is only as good as its null. Three things are checked routinely, and the worked example turns each into an assertion that fails the run:</p>
+  <ul>
+    <li><strong>Genomic control λ</strong> of a permuted phenotype, judged on autosomal bins because every sex-chromosome bin carries the same sex vector.</li>
+    <li><strong>A coverage-PC null.</strong> The leading PC plus noise as the phenotype: a test that failed to condition on the removed components would be deflated to λ ≈ 0.5 here, a correct one sits at 1.</li>
+    <li><strong>A structured null</strong> drawn from the kinship matrix, <i>y</i> ~ MVN(0, <i>h</i>²·2<i>K</i> + (1 − <i>h</i>²)<i>I</i>), which a permuted phenotype cannot show, run over everyone and over the unrelated set.</li>
+  </ul>
+  <p>The test suite (97 checks, synthetic data with known deletions, sex chromosomes, zero-depth and single-outlier bins) asserts on the numbers rather than on exit codes: the injected association is recovered with the estimate <code>lm()</code> and <code>coxph()</code> give, the PC-driven null stays calibrated, the ploidy model centres chrX for both sexes and fits chrY on males only, a permutation maximum equals an independent recomputation under the documented contract, and outputs are byte-identical between a host and the container.</p>
+</section>
+
+<section id="deploy">
+  <h2>Running it</h2>
+  <p>Four scripts, one region at a time. On a cluster, an array task per region; in the cloud, a WDL scatter with the same scripts inside a published image; on a workstation, a loop. Nothing in the pipeline knows which.</p>
+<pre><code>scripts/join.sh    --manifest mosdepth.input.txt --out work/join
+scripts/regions.sh --matrix work/join/depth.matrix.txt.gz --window 10000000 --sizes hg38.chrom.sizes &gt; regions.txt
+scripts/correct.sh --region chr1:1-10000000 --ndim 40 --sex phenotypes.tsv --par conf/par.grch38.bed
+scripts/analyze.sh --corrected work/corrected/corrected_ndim40.chr1_1-10000000.txt.gz \
+                   --pheno-manifest analyses.tsv --pcs svd.pcs.txt --perms 100 --region chr1:1-10000000
+scripts/export.sh  --results work/assoc --regions regions.txt --pheno-manifest analyses.tsv --out work/export</code></pre>
+  <p>Two WDL workflows ship for Cromwell and dxCompiler: one that starts from a joined matrix, and the block form for biobank width in which no task sees the whole matrix. Inputs can be streamed rather than copied. The container is built for <code>linux/amd64</code> on every release tag and published with its digest, so a run can be pinned to the exact image. Every export summary records the version and commit it was made by.</p>
+</section>
+
+<section id="limits">
+  <h2>Limitations and roadmap</h2>
+  <ul>
+    <li><strong>Relatedness.</strong> Regression with covariates does not model kinship. With relatives in the cohort, run the sweep on the unrelated set as the primary result and use the structured null to quantify what relatedness does to the rest; for biobank-scale cohorts a mixed-model engine is the standard, and depthSV's hand-off to one is not yet validated.</li>
+    <li><strong>Rare binary outcomes.</strong> The per-bin Wald and likelihood-ratio tests are fine for balanced traits; unbalanced case counts need a saddlepoint-corrected score test.</li>
+    <li><strong>Non-monotone models.</strong> Dosage-sensitive and recessive patterns need integer copy-number genotypes; a continuous test cannot fit them.</li>
+    <li><strong>Scale of the join.</strong> The monolithic join is a single-node job; the block form is the biobank path.</li>
+  </ul>
+</section>
+
+<section id="cite">
+  <h2>Citation and credits</h2>
+  <p>depthSV is released under the MIT licence. Cite the repository (a <code>CITATION.cff</code> is included) until a release DOI exists. Development, review and documentation were carried out with Claude (Anthropic); every change is tested by the suite and the worked example before it lands.</p>
+</section>
+
+<section id="refs">
+  <h2>References</h2>
+  <ol class="refs">
+    <li id="ref-garg">Garg P, Jadhav B, Shadrina M, Martin-Trujillo A, Sharp AJ. A phenome-wide association study of CNVs genotyped from genome sequencing read depth in the UK Biobank. <a href="https://www.medrxiv.org/content/10.1101/2025.08.05.25333035v1">medRxiv 2025</a>.</li>
+    <li id="ref-nature">Phenome-wide analysis of copy number variants in 470,727 UK Biobank genomes. <a href="https://www.nature.com/articles/s41586-025-10087-x">Nature 652:675–685 (2026)</a>.</li>
+    <li id="ref-xhmm">Fromer M et al. Discovery and statistical genotyping of copy-number variation from whole-exome sequencing depth. <a href="https://www.cell.com/ajhg/fulltext/S0002-9297(12)00417-X">Am J Hum Genet 91:597–607 (2012)</a>.</li>
+    <li id="ref-conifer">Krumm N et al. Copy number variation detection and genotyping from exome sequence data (CoNIFER). Genome Res 22:1525–1532 (2012); <a href="https://conifer.sourceforge.net/tutorial.html">tutorial on component removal</a>.</li>
+    <li id="ref-gcnv">Babadi M et al. GATK-gCNV: a rare copy number variant discovery algorithm and its application to exome sequencing in the UK Biobank. <a href="https://www.biorxiv.org/content/10.1101/2022.08.25.504851v1.full">bioRxiv 2022</a>; and <a href="https://cnvkit.readthedocs.io/en/stable/sex.html">CNVkit, chromosomal sex</a>.</li>
+    <li id="ref-patterson">Patterson N, Price AL, Reich D. Population structure and eigenanalysis. PLoS Genet 2:e190 (2006).</li>
+    <li id="ref-mccaw">McCaw ZR, Lane JM, Saxena R, Redline S, Lin X. Operating characteristics of the rank-based inverse normal transformation for quantitative trait analysis in genome-wide association studies. <a href="https://onlinelibrary.wiley.com/doi/10.1111/biom.13214">Biometrics 76:1262–1272 (2020)</a>.</li>
+    <li id="ref-winkler">Winkler AM, Ridgway GR, Webster MA, Smith SM, Nichols TE. Permutation inference for the general linear model. <a href="https://ora.ox.ac.uk/objects/uuid:ff7332f0-89d1-4aa7-a23a-988e2d58442e">NeuroImage 92:381–397 (2014)</a>.</li>
+    <li id="ref-wy">Westfall PH, Young SS. Resampling-based multiple testing. Wiley (1993).</li>
+    <li id="ref-1kg">Byrska-Bishop M et al. High-coverage whole-genome sequencing of the expanded 1000 Genomes Project cohort including 602 trios. <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC9439720/">Cell 185:3426–3440 (2022)</a>.</li>
+  </ol>
+</section>
+
+<footer>
+  <p>depthSV · <a href="https://github.com/jlanej/depthSV">github.com/jlanej/depthSV</a> · MIT licence</p>
+</footer>
+
+</main>
+</div>
+</body>
+</html>

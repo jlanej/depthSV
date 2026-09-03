@@ -32,9 +32,13 @@ callset:
 |---|---|---|
 | `mtdna_cn` (linear) | `MTDNA_CN` = 2 × chrM mean / HQ autosomal median | chrM bins must dominate the association; top autosomal hits are NUMT candidates, reported for inspection |
 | `log2_mtdna_cn` (linear) | log₂ of the above | on a chrM bin the corrected depth *is* log₂(chrM/median), so the slope should sit near 1 — an effect-size check, not just a rank check |
-| `sex_linear` (linear) | `SEX` from X/Y coverage ratios | chrX/chrY bins must dominate |
-| `inferred_sex` (logistic) | same `SEX`, through the logistic engine | runs to completion; *documents* that the Wald z collapses on the sex chromosomes under complete separation (Hauck–Donner) — which is why the rank assertion lives on the linear run |
-| `mtdna_cn_null` (linear) | `MTDNA_CN` permuted with a fixed seed | genomic-control λ near 1; ~5% of regions at p<0.05 |
+| `mtdna_cn_int` (linear, `rank-int,robust`) | `MTDNA_CN` inverse-normal transformed | the same chrM truth on the transformed phenotype with robust SEs — the model a skewed trait would be published with |
+| `sex_linear` (linear) | `SEX` from X/Y coverage ratios | the correction runs with the ploidy model (chrX normalised by expected copies, chrY fitted on males only), so corrected chrX depth must explain *little* of `SEX`: median R² < 0.15; a misaligned sex table gives ≈ 0.5. N on chrY must equal the male count |
+| `inferred_sex` (logistic) | same `SEX`, through the logistic engine | runs to completion; median z on chrX/Y reported |
+| `mtdna_cn_null` / `mtdna_cn_null_int` (linear) | `MTDNA_CN` permuted with a fixed seed | genomic-control λ near 1; ~5% of regions at p<0.05 |
+| `cov_pc1_null` (linear) | coverage PC1 plus noise | λ near 1 only if the removed PCs are in the model (≈0.5 otherwise): the deflation check of the two-stage design |
+| `mtdna_cn_unrel` / `mtdna_cn_null_unrel` (linear; with the preamble's genotypes) | the same phenotypes on the KING-unrelated set | the same chrM truth and calibration; the difference from the all-sample runs is the relatedness effect |
+| `structured_null` / `structured_null_unrel` (linear; with the preamble's genotypes) | y ~ MVN(0, h²·2K + (1−h²)I) from the KING kinship | calibrated on the unrelated set; over everyone, whatever inflation appears is what a permuted null cannot show |
 
 Because phenotype, coverage medians and PCs all come from the *same
 upstream run per mode*, the comparison between modes is a genuine
@@ -98,8 +102,9 @@ export EX_WORK_DIR=/scratch/$USER/depthsv_1000G_highcov
 # site specifics, if any: export EX_SBATCH_EXTRA="--partition=... --account=..."
 # module names, if needed: export DSV_MODULES="parallel R htslib"
 
-sbatch preamble.sh           # once: MP-derived ndim + genotype-PC covariates (24 cores / 248 GB / <24 h)
-bash run.sh                  # 00 -> 01 -> 02: resolve, prepare, submit
+mkdir -p "$EX_WORK_DIR/logs"
+sbatch --output="$EX_WORK_DIR/logs/%x.%j.out" preamble.sh   # once: MP-derived ndim + genotype-PC covariates
+bash run.sh                  # after the preamble finishes: 00 -> 01 -> 02: resolve, prepare (freeze), submit
 ```
 
 The preamble is optional but is what makes the mtDNA-CN models *reasonable*
@@ -180,7 +185,13 @@ the committed 3,202-sample spectrum the count is **52 at the exact edge and
 42 / 38 / 32 with a 1 / 2 / 5 % margin** — real coverage noise is not iid
 (per-bin variance differs), so the observed plateau decays a little faster
 than MP and the exact-edge count runs high. The default margin is 1 %
-(`EX_MP_MARGIN`, about four Tracy–Widom sd here); `ndim/ndim_by_mode.tsv`
+(`EX_MP_MARGIN`); that margin is far larger than the Tracy–Widom
+fluctuation of the noise edge at this size (Johnstone's scaling puts the
+edge's relative sd near 4 × 10⁻⁴, so 1 % is ~25 sd) — it absorbs the
+misfit between real, heteroskedastic coverage noise and the iid MP model,
+not sampling noise, and the count also depends on whether observed rank *j*
+is matched to noise rank *j* or *j − k* (42 vs 48 at 1 % here). Treat the
+1–2 % counts as a defensible range, not a number; `ndim/ndim_by_mode.tsv`
 carries all four counts and `ndim/ndim_mp.png` the fit, so the sensitivity
 is in the open rather than in a default.
 
@@ -203,14 +214,24 @@ superpopulation with relatives as open points, plus the scree. Output:
 `preamble/covariates.tsv` (`SAMPLE`, `GPC1..GPC40`, `GPC_PROJECTED`,
 superpopulation/population), `gpc_plots.png`, `gpc_calibration.tsv`.
 
+The genotype step also writes `preamble/unrelated.txt` (the KING-unrelated
+IDs) and `preamble/kinship.king` (the square KING matrix): the prepare
+stage restricts the `*_unrel` phenotypes to the former and draws the
+structured null from the latter.
+
 **How it flows into the run.** With `covariates.tsv` present, the prepare
 stage merges the genotype PCs into `phenotypes.tsv` and writes the adjusted
 manifest: `mtdna_cn` (unadjusted, the pure truth check) plus
-`mtdna_cn_adj`, `log2_mtdna_cn_adj`, `mtdna_cn_null_adj` with
+`mtdna_cn_adj`, `mtdna_cn_int_adj`, `log2_mtdna_cn_adj`,
+`mtdna_cn_null_adj`, `mtdna_cn_null_int_adj`, `cov_pc1_null_adj`, the
+`*_unrel_adj` and `structured_null*_adj` rows with
 `+SEX+GPC1..GPC10` (`EX_N_GPCS`; or set `EX_COVARIATES` to any `+`-joined
-list of phenotype columns, `none` for unadjusted), `sex_linear` with the
-genotype PCs only, and the logistic run unchanged. The evaluation applies
-each family's checks to its adjusted variant.
+list of phenotype columns, `none` for unadjusted), `sex_linear_adj` with the
+genotype PCs only, and the logistic run unchanged. The coverage PCs the
+correction removed are added to every model by the analysis stage itself.
+The evaluation applies each family's checks to its adjusted, transformed
+and unrelated-set variants; the null phenotypes are drawn once and copied
+to every mode by sample ID.
 
 Requirements beyond the pipeline's: `plink2` ≥ 2.00a5 (for `--pmerge-list`
 and `--pca allele-wts`; `EX_PREAMBLE_MODULES` names the module if your site
@@ -230,13 +251,14 @@ before all of them and runs once.
 | 0 | `00_fetch_inputs.sh` | Resolve each mode's `svd.pcs.txt`, `sample_qc.tsv` and (when the run wrote one) `autosomal.median.txt`: local NGS-PCA trees first, the committed GitHub results as fallback; the seed control only locally. `EX_SMOKE=1` also simulates the mosdepth trees. Records the resolution in `inputs/<mode>/paths.env`. |
 | 1 | `01_prepare_inputs.sh` | Build depthSV's input tables per mode: PC table with the `.by1000.` sample suffix stripped, `SAMPLE`/`AUTO_HQ_median` coverage from NGS-PCA's own median table (else the QC table), the phenotype table and analysis manifest above, the mosdepth manifest, and `chrom.sizes` read from the first region file. Verifies the mosdepth↔coverage ID overlap *before* hours of joining, that `MTDNA_CN` was built on the same median, and that the modes' sample sets agree. |
 | 2 | `02_run_depthsv.sh` | Per prepared mode: `join` → windowed region list (`scripts/regions.sh`, filtered to `EX_CONTIG_REGEX`) → `correct` + `analyze` per region, as a SLURM chain or locally. `seedctl` reuses the standard matrix. Every stage runs under the timing recorder. |
-| 3 | `03_evaluate.sh` | Truth checks per mode → `eval/<mode>/`. FAIL = machinery broken (non-zero exit); WARN = statistical expectation missed. |
+| 3 | `03_evaluate.sh` | The export of every analysis (`scripts/export.sh`: shards concatenated over the region list, counts below `EX_MIN_COUNT` suppressed, the empirical threshold from `EX_PERMS` permutations) → `work/<mode>/export_ndim<k>/`, then the truth checks per mode → `eval/<mode>/`. FAIL = machinery broken (non-zero exit); WARN = statistical expectation missed. |
 | 4 | `04_compare_modes.sh` | Association concordance for standard-vs-fast and standard-vs-seedctl → `compare/<a>_vs_<b>/`, and the calibration verdict → `compare/summary.md`. |
 | 5 | `05_profile.sh` | Timing + `sacct` aggregation → `profile/`. |
+| 6 | `06_sv_recovery.sh` | Known deletions corrected at several ndims; carrier-vs-non-carrier recovery per ndim → `sv_recovery/<mode>/` (see [SV-callset recovery](#sv-callset-recovery)). |
 
-Stages 3–5 run automatically at the end of stage 2; they exist separately
-so they can be rerun (or rerun with different thresholds) without touching
-the pipeline output.
+Stages 3–6 run automatically at the end of stage 2 (6 as its own job under
+SLURM); they exist separately so they can be rerun (or rerun with different
+thresholds) without touching the pipeline output.
 
 ## What gets checked
 
@@ -248,18 +270,34 @@ the pipeline output.
 - **`chrM_log2_slope` (WARN)** — the `log2_mtdna_cn` estimate at the best
   chrM bin should sit near 1 (band 0.5–1.5). Catches scale errors that a
   rank check cannot.
-- **`sex_top_hit` (FAIL) / `sex_top100_purity` (WARN)** — `sex_linear`
-  must put chrX/chrY on top, and ≥90% of its top 100.
-- **`wald_separation_note` (INFO)** — on the logistic run, small
-  sex-chromosome z alongside a dominant linear t is the Hauck–Donner
-  collapse under complete separation, recorded so nobody mistakes it for a
-  miss. (It is also a live argument for the score/external-engine path on
-  saturated binary traits.)
+- **`sex_signal_removed` (FAIL/WARN)** — with the ploidy model on
+  (`EX_PLOIDY=1`, the default), `sex_linear`'s t on each chrX bin converts
+  to the R² of `SEX` on corrected chrX depth (t²/(t²+df)); the median over
+  chrX must stay below 0.15 (WARN) / 0.35 (FAIL). A misaligned sex table
+  gives ≈ 0.5 on every bin. With `EX_PLOIDY=0` the old assertion applies
+  instead: chrX/chrY on top (`sex_top_hit`).
+- **`chrY_tested_in_males` (FAIL)** — chrY regions are fitted on the
+  samples with an expected copy, so `N` there must equal the number of
+  males in the sex table (checked on `mtdna_cn`).
+- **`logistic_sex_note` (INFO)** — on the logistic run, the median z on
+  chrX/Y beside the autosomes. Without the ploidy model the sexes are
+  completely separated there and the Wald z collapses (Hauck–Donner); with
+  it the sex chromosomes should look like autosomes.
 - **`null_lambda` / `null_frac_p05` (WARN)** — the permuted phenotype must
   stay calibrated (λ band 0.85–1.20 on real data), judged on autosomal
   bins: every chrX/Y bin carries the same sex vector, so those tests are one
   dependent draw, not thousands of independent ones. The all-bin λ is
   reported as INFO.
+- **`pc_null_lambda` (FAIL/WARN)** — `cov_pc1_null` is coverage PC1 plus
+  noise; λ below 0.7 means the removed PCs are not being conditioned on.
+- **`structured_null_lambda` (WARN on the unrelated set, INFO over
+  everyone)** — the MVN null from the kinship: calibrated where relatives
+  are excluded; the all-sample λ is the relatedness effect.
+- **`export` (INFO) / `chrM_passes_empirical_threshold` (WARN)** — per
+  analysis, what the export step found: rows suppressed, λ, Bonferroni and
+  empirical-threshold hits (from `EX_PERMS` permutations), M_eff; for the
+  mtDNA phenotypes at least one chrM bin must survive the genome-wide
+  max-T threshold.
 - **`regions_unique` (FAIL)** — no bin tested twice: the windowed region
   list must partition the matrix.
 - **`all_units_reported` (WARN)** — one output shard per work unit per
@@ -294,6 +332,35 @@ distance comparable to the seed distance. Falling short is a finding about
 fast mode, not about the pipeline — that is the point of running the
 comparison end to end.
 
+## SV-callset recovery
+
+The Marchenko–Pastur count says how many coverage components stand out
+from noise, not how many should be removed before an association test: the
+components that carry real copy-number variation sit inside the removed set
+once ndim is large enough, and a correction that absorbs the deletions it
+is meant to expose is worse than one that leaves some batch structure in.
+[`06_sv_recovery.sh`](06_sv_recovery.sh) measures the outcome directly. It
+takes the NYGC 3,202-sample SV callset (`EX_SV_CALLSET_URL`, ~1 GB,
+downloaded once; `EX_SV_CALLS` names a prepared table instead), keeps PASS
+autosomal deletions of at least `EX_SV_MIN_LEN` (5 kb) with carrier
+frequency in `EX_SV_MIN_AF`–`EX_SV_MAX_AF`, spreads up to `EX_SV_MAX_DELS`
+(200) of them over the chromosomes, corrects each one at every ndim in
+`EX_SV_NDIMS` plus the MP count and the run's own ndim (one small unit per
+deletion and ndim, skipped when done), and compares carriers with
+non-carriers on the corrected depth averaged over the bins inside the
+deletion: AUC, the shift in log2 units (one lost copy is about −1) and a
+Welch t. `sv_recovery/<mode>/summary.md` tabulates the medians per ndim,
+`sv_recovery.png` plots them with the MP count and the run's ndim marked,
+and `recommended_ndim.txt` holds the smallest ndim within 0.01 of the best
+median AUC — the start of the plateau. It is informational: set `EX_NDIM`
+to adopt it. In smoke mode the deletions are twelve the simulated tree
+carries, so the stage is exercised without the download.
+
+The stage runs as its own job at the end of the chain. If compute nodes
+cannot reach the internet, fetch the callset from a login node first —
+`bash 06_sv_recovery.sh --fetch-only` downloads and reduces it into
+`sv_callset/` and stops — or set `EX_SV_RECOVERY=0`.
+
 ## Profiling
 
 Every stage invocation appends one record (mode, stage, unit, wall
@@ -323,9 +390,16 @@ that matter most:
 | `EX_NDIM` | `preamble/ndim.txt`, else 20 | PCs removed by the correction; the preamble's MP count when it ran, an explicit value always wins |
 | `EX_MP_MARGIN` | 0.01 | relative margin above the MP edge for the PC counts (coverage and genotype) |
 | `EX_N_GPCS` / `EX_COVARIATES` | 10 / `SEX+GPC1..GPC10` when covariates exist, else `none` | covariate terms of the adjusted models |
+| `EX_PLOIDY` / `EX_PAR` | 1 / `conf/par.grch38.bed` | ploidy model for chrX/chrY from the inferred sex; 0 turns it off |
+| `EX_WINSOR_LOG2` | −3 | floor on the log2 ratio before correction |
+| `EX_MAX_SHARE` | 0.5 | skip a region where one sample carries more than this share of the residual depth |
+| `EX_PERMS` / `EX_PERM_SEED` | 100 (50 in smoke) / 1 | permutations per linear analysis for the export's empirical threshold |
+| `EX_MIN_COUNT` | 20 | export suppresses rows with N, NCase or NControl below this |
+| `EX_STRUCTURED_H2` | 0.5 | heritability of the structured null drawn from the kinship |
+| `EX_SV_RECOVERY` / `EX_SV_NDIMS` / `EX_SV_MAX_DELS` | 1 / `0 5 10 20 40 60` (+MP, +ndim) / 200 | the SV-callset recovery stage; `EX_SV_CALLSET_URL`, `EX_SV_CALLS`, `EX_SV_MIN_LEN`, `EX_SV_MIN_AF`, `EX_SV_MAX_AF` shape it |
 | `EX_GENO_CHROMS` | 1–22 (22 only in smoke) | chromosomes the genotype PCA uses |
 | `EX_PREAMBLE_MODULES` | `plink2` | modules loaded before plink2, where `module` exists |
-| `EX_WINDOW` | 25000000 | work-unit size in bp (~140 units over chr1–22,X,Y,M); 0 = per contig |
+| `EX_WINDOW` | 10000000 | work-unit size in bp (~310 units over chr1–22,X,Y,M, ~150 s each at 3,202 samples); 0 = per contig |
 | `EX_CONTIG_REGEX` | primary + chrM | which contigs get corrected/analysed (the matrix keeps everything) |
 | `EX_MIN_OBS` | 100 | per-region completeness floor at the analysis stage |
 | `EX_SBATCH_JOIN/UNIT/LIGHT` | see config | resources per job class |
@@ -355,19 +429,36 @@ the driver; you should not need to set it yourself here.
   when they disagree, which is the signature of a QC pass run before its
   PCA run or against the other mode's. A run that reused a cached NGS-PCA
   matrix writes no median table; the QC fallback covers it.
-- **Reruns resume.** Every unit writes a `.done` marker; resubmitting
-  `02_run_depthsv.sh` redoes only what is missing. `--force` redoes a
-  mode's units deliberately. Association output lands in
-  `assoc_ndim<EX_NDIM>/`, so changing `EX_NDIM` can never silently reuse a
-  previous sweep's results.
+- **Reruns resume, and parameters are frozen per run.** Every unit writes a
+  `.done` marker beside a `.params` record of its inputs and parameters;
+  resubmitting `02_run_depthsv.sh` redoes only what is missing or was made
+  with different inputs (a changed model, covariate set, threshold or
+  coverage table is redone, not reused). `--force` redoes a mode's units
+  deliberately. Stage 1 freezes the resolved `EX_NDIM`, `EX_COVARIATES`,
+  window and thresholds into `inputs/run.env`, which every later job loads
+  before `config.sh` — so a preamble finishing mid-run cannot change ndim
+  under the array. **Rerun `01_prepare_inputs.sh` after the preamble** to
+  pick up its ndim and covariates; the driver refuses to submit while a
+  `dsvx-preamble` job is still queued.
+- **Provenance travels with the verdicts.** Each mode's input source
+  (`local`, `smoke:github`, `smoke:…synthetic-fast`, …) is printed in its
+  evaluation summary and in the comparison; a synthetic fast tree is
+  flagged as **SYNTHETIC** wherever a number derived from it appears. In a
+  real run, pairing local depths with the committed GitHub PCs is opt-in
+  (`EX_ALLOW_GITHUB_FALLBACK=1`) because those PCs belong to another run's
+  matrix.
 - **The PC correction absorbs globally structured phenotypes — measurably.**
   mtDNA copy number loads on the leading depth PCs (it is one of NGS-PCA's
   own QC overlays); across a 64-sample subset the first 20 PCs explain
-  ~67% of log₂(MTDNA_CN) variance, and the `chrM_log2_slope` shrinks
-  accordingly. That is not a defect of the example, it is the ndim
-  trade-off made visible: sweep `EX_NDIM` (0 disables correction) and watch
-  the slope and the null λ move. This is exactly the evidence the
-  top-level README says the `--ndim` choice should rest on.
+  ~67% of log₂(MTDNA_CN) variance, and on the full 3,202 samples the first
+  42 explain ~58%. What the correction removes is *power*, not the effect
+  estimate: by Frisch–Waugh the chrM slope is invariant to ndim (it stays
+  near 1 at every setting), while the t-statistic falls as the PCs absorb
+  the depth variance (35 → 4 across ndim 0 → 40 in the smoke slice). That
+  is not a defect of the example, it is the ndim trade-off made visible:
+  sweep `EX_NDIM` (0 disables correction) and watch the chrM t-statistic
+  and the null λ, not the slope. This is exactly the evidence the top-level
+  README says the `--ndim` choice should rest on.
 - **Regenerating upstream results** is NGS-PCA's business; this example
   only reads its outputs. Keep one upstream mosdepth version per
   comparison (their timing records note it).
@@ -376,6 +467,14 @@ the driver; you should not need to set it yourself here.
   described in [`PLAN.md`](../../PLAN.md); this example gives that gate
   its real-data substrate (a known chrM signal at known strength) when it
   lands.
+
+## Credits
+
+This example, its preamble and its evaluation were developed by
+[Claude](https://claude.ai) (Anthropic; Claude Fable 5) with the maintainer
+in Claude Code; the upstream data and PCA come from the NGS-PCA project and
+the 1000 Genomes / NYGC 30x resource (Byrska-Bishop et al. 2022), and the
+genotype callset in PLINK 2 format from the PLINK 2.0 resources page.
 
 ## Troubleshooting
 
@@ -394,3 +493,6 @@ the driver; you should not need to set it yourself here.
 | preamble: `got an HTML page instead of a file` | Dropbox is blocked from that node; download the files listed in `resources/genotype_sources.tsv` elsewhere and place them under `preamble/genotypes/` |
 | preamble: `projection reproduces in-sample PCs with r^2 down to …` | the projected scores should be proportional to the in-sample PCs; a low r² on a deep PC is a near-degenerate eigenvalue pair, harmless if it is beyond `EX_N_GPCS` |
 | `ndim.txt not written` | the reported spectrum never reached the noise bulk; raise `NUM_PC` upstream or set `EX_NDIM` |
+| after upgrading depthSV every unit says `made with different inputs or parameters; redoing` | expected: finished work is keyed on the stage scripts' checksums, so a new pipeline version recomputes everything, the join included. Use a fresh `EX_WORK_DIR` (point `EX_PREAMBLE_DIR` at the old preamble to keep it) or let it recompute in place |
+| no `*_unrel` / `structured_null` rows in `analyses.tsv` | the preamble ran before the kinship outputs existed; `bash preamble.sh --genotypes-only` reuses the pruned genotypes and adds `unrelated.txt` and `kinship.king`, then rerun `01_prepare_inputs.sh` |
+| `dsvx-sv-recovery` job fails at the download | compute nodes without internet: `bash 06_sv_recovery.sh --fetch-only` from a login node, then resubmit; or `EX_SV_RECOVERY=0` |

@@ -1,0 +1,20 @@
+paste    2 cols x 10000000 lines:   120.0 MB out in   5.10 s ->     24 MB/s
+paste   57 cols x  1000000 lines:   342.0 MB out in  14.98 s ->     23 MB/s
+paste  708 cols x   100000 lines:   424.8 MB out in  18.09 s ->     23 MB/s
+paste 1024 cols x    60000 lines:   368.6 MB out in  15.76 s ->     23 MB/s
+bgzip -l 1 -@ 1 :  424.8 MB ->  165.1 MB (ratio 2.57) in  1.80 s ->   236 MB/s in
+bgzip -l 1 -@ 4 :  424.8 MB ->  165.1 MB (ratio 2.57) in  0.43 s ->   983 MB/s in
+bgzip -l 1 -@ 8 :  424.8 MB ->  165.1 MB (ratio 2.57) in  0.35 s ->  1214 MB/s in
+bgzip -@ 1      :  424.8 MB ->  149.6 MB (ratio 2.84) in 11.61 s ->    37 MB/s in
+bgzip -@ 4      :  424.8 MB ->  149.6 MB (ratio 2.84) in  3.73 s ->   114 MB/s in
+bgzip -@ 8      :  424.8 MB ->  149.6 MB (ratio 2.84) in  2.33 s ->   183 MB/s in
+paste over 8 FIFOs fed by bgzip -dc: 424.8 MB in 20.17 s -> 21 MB/s
+genome-sized mosdepth file: 21126210 bytes bgz (21.1 MB)
+real 1.39 user 1.28 sys 0.08  (join_extract.sh: gzip -cd | cut -f4, then wc -l)
+real 2.35 user 2.43 sys 0.10  (--strict-coords second pass)
+real 0.09 user 0.08 sys 0.00  (gzip -cd alone)
+real 0.10 user 0.09 sys 0.00  (bgzip -dc alone)
+real 1.41 user 1.25 sys 0.06  (bgzip -dc | cut -f4)
+[E::hts_idx_check_range] Region 536870000..536871000 cannot be stored in a tbi index. Try using a csi index
+tbx_index_build3 failed: genome.bed.gz
+[E::idx_find_and_load] Could not retrieve index file for 'genome.bed.gz' Could not load .tbi/.csi index of genome.bed.gz: No such file or directory        0 real 0.00 user 0.00 sys 0.00  (tabix one 25 Mb window from a per-sample file)

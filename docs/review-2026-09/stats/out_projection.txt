@@ -1,0 +1,13 @@
+gamma = 0.0167, MP edge = 1.275 (noise units)
+PC   target eig sample eig   calib r^2      sd(test)/sd(train)   cor(test proj, truth) 
+1    100.0      119.78       1.0000         0.970                1.000                 
+2    30.0       24.59        1.0000         0.985                0.997                 
+3    10.0       10.59        1.0000         0.964                0.991                 
+4    5.0        5.09         1.0000         0.769                0.991                 
+5    3.0        2.96         1.0000         0.628                0.986                 
+6    2.0        2.10         1.0000         0.493                0.950                 
+7    1.5        1.54         1.0000         0.324                0.936                 
+
+Reading: calibration r^2 is 1.000 for every PC (the in-sample projection is the in-sample PC), while the
+held-out projections are shrunk by the factor in the last two columns; the shrinkage is what the 698 projected
+relatives carry into the covariate table. Shrinkage is negligible for eigenvalues >> the MP edge and large near it.

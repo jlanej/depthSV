@@ -50,7 +50,7 @@ dsv_die()  { printf '[%s] ERROR: %s\n' "$(dsv_now)" "$*" >&2; exit 2; }
 # itself means editing the header cannot silently truncate --help, which is
 # what hand-tuned `sed` line ranges did.
 dsv_usage() {
-    awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0" \
+    awk 'NR>1 && /^#SBATCH/ { next } NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "$0" \
       | sed -e '/^-\{3,\}$/d' -e '/^$/{ $d; }'
     exit 0
 }
@@ -71,9 +71,14 @@ dsv_require_cmd() {
     done
 }
 
+# A URL (gs://, https://, ...) is accepted as-is: htslib reads indexed files
+# remotely, which is how a cloud task streams the matrix instead of copying it.
+dsv_is_url() { case "$1" in *://*) return 0 ;; *) return 1 ;; esac; }
+
 dsv_require_file() {
     local f
     for f in "$@"; do
+        dsv_is_url "$f" && continue
         [ -s "$f" ] || dsv_die "required file missing or empty: $f"
     done
 }
@@ -107,7 +112,11 @@ dsv_load_modules() {
 
 dsv_header() {                     # dsv_header <file.gz>
     set +o pipefail
-    gzip -cd "$1" | head -n 1
+    if dsv_is_url "$1"; then
+        tabix -H "$1" | head -n 1        # remote: through the index
+    else
+        gzip -cd "$1" | head -n 1
+    fi
     set -o pipefail
 }
 
@@ -118,7 +127,7 @@ dsv_header() {                     # dsv_header <file.gz>
 
 dsv_resolve_contig() {             # dsv_resolve_contig <indexed.gz> <chrom>
     local f="$1" c="$2" hit
-    [ -s "${f}.tbi" ] || [ -s "${f}.csi" ] || dsv_die "no tabix index beside $f (run: tabix -p bed $f)"
+    dsv_is_url "$f" || [ -s "${f}.tbi" ] || [ -s "${f}.csi" ] || dsv_die "no tabix index beside $f (run: tabix -p bed $f)"
     hit="$(tabix -l "$f" | awk -v c="$c" '$0 == c || $0 == "chr" c || "chr" $0 == c {print; exit}')"
     [ -n "$hit" ] || dsv_die "chromosome '$c' is not present in $f (contigs: $(tabix -l "$f" | tr '\n' ' '))"
     printf '%s\n' "$hit"
@@ -141,29 +150,97 @@ dsv_read_region() {                # dsv_read_region <indexed.gz> <region>
 # Nothing is written under its final name until it has been verified. A stage
 # that dies part-way leaves a .tmp.gz for inspection and no .done marker, so a
 # resume-aware dispatcher re-runs it rather than treating it as finished.
+#
+# A finished unit is only reusable for the SAME inputs and parameters. Each
+# stage describes what it is about to compute as a signature — every input's
+# size and mtime, every parameter, the driver script's checksum — which is
+# stored beside the output at commit time (.params) and compared before any
+# skip. A unit whose signature differs is not complete, and the differing
+# lines are logged; an output filename carries at most one or two of these
+# parameters, so without this a changed coverage table, model or threshold
+# used to be silently served the previous result.
 
-dsv_output_tmp()  { printf '%s.tmp.gz\n' "$1"; }
-dsv_output_done() { printf '%s.done\n'   "$1"; }
+dsv_output_tmp()    { printf '%s.tmp.gz\n' "$1"; }
+dsv_output_done()   { printf '%s.done\n'   "$1"; }
+dsv_output_params() { printf '%s.params\n' "$1"; }
 
-# Clear anything a previous partial run left behind, unless it completed.
-dsv_output_reset() {               # dsv_output_reset <finalPath>
-    local final="$1"
-    if [ ! -f "$(dsv_output_done "$final")" ]; then
-        rm -f "$(dsv_output_tmp "$final")" "$final" "${final}.tbi" "${final}.csi"
+# One input's identity for a signature. Small inputs (tables of samples: PCs,
+# coverage, phenotypes) are identified by content, so regenerating an
+# identical table does not invalidate finished work; anything larger — the
+# matrix — by size and modification time, since hashing terabytes is not an
+# option and a same-size same-mtime replacement is treated as the same file.
+DSV_SIG_HASH_BYTES="${DSV_SIG_HASH_BYTES:-268435456}"   # 256 MB
+dsv_file_sig() {                   # dsv_file_sig <file>
+    local size
+    if dsv_is_url "$1"; then
+        printf '%s:url' "$1"            # remote objects are identified by name
+    elif [ -e "$1" ]; then
+        size="$(wc -c < "$1" | tr -d ' ')"
+        if [ "$size" -le "$DSV_SIG_HASH_BYTES" ]; then
+            printf '%s:%s:cksum=%s' "$1" "$size" "$(cksum < "$1" | awk '{print $1}')"
+        else
+            printf '%s:%s:mtime=%s' "$1" "$size" "$(dsv_mtime "$1")"
+        fi
+    else
+        printf '%s:missing' "$1"
     fi
 }
 
-# True if this unit of work is already finished.
-dsv_output_complete() {            # dsv_output_complete <finalPath>
-    [ -f "$(dsv_output_done "$1")" ] && [ -s "$1" ]
+# Checksum of a script, so an edited driver invalidates its own outputs.
+dsv_script_sig() { cksum < "$1" | awk '{print $1}'; }
+
+# The pipeline's version and the commit it runs from: VERSION at the root,
+# COMMIT when the image was built, else git. Provenance for the export.
+dsv_version() {
+    local v="unknown" c=""
+    [ ! -s "$DSV_ROOT/VERSION" ] || v="$(tr -d '[:space:]' < "$DSV_ROOT/VERSION")"
+    if [ -s "$DSV_ROOT/COMMIT" ]; then
+        c="$(tr -d '[:space:]' < "$DSV_ROOT/COMMIT")"
+    elif command -v git >/dev/null 2>&1; then
+        c="$(git -C "$DSV_ROOT" rev-parse --short HEAD 2>/dev/null || true)"
+        [ -z "$c" ] || [ -z "$(git -C "$DSV_ROOT" status --porcelain 2>/dev/null | head -n 1)" ] || c="$c-dirty"
+    fi
+    printf 'depthSV %s%s\n' "$v" "${c:+ ($c)}"
+}
+
+# Clear anything a previous partial run left behind. With force=1 the
+# finished result and its markers go too, so a forced run that then fails
+# cannot leave the old result behind under a valid marker.
+dsv_output_reset() {               # dsv_output_reset <finalPath> [force]
+    local final="$1" force="${2:-0}"
+    if [ "$force" = "1" ] || [ ! -f "$(dsv_output_done "$final")" ]; then
+        rm -f "$(dsv_output_tmp "$final")" "$final" "${final}.tbi" "${final}.csi" \
+              "$(dsv_output_done "$final")" "$(dsv_output_params "$final")"
+    fi
+}
+
+# True if this unit of work is already finished — and, when a signature is
+# given, finished for these inputs and parameters.
+dsv_output_complete() {            # dsv_output_complete <finalPath> [signature]
+    local final="$1" sig="${2:-}" params
+    [ -f "$(dsv_output_done "$final")" ] && [ -s "$final" ] || return 1
+    [ -n "$sig" ] || return 0
+    params="$(dsv_output_params "$final")"
+    if [ ! -f "$params" ]; then
+        dsv_log "$(basename "$final") predates parameter tracking; redoing it"
+        return 1
+    fi
+    if [ "$(cat "$params")" != "$sig" ]; then
+        dsv_log "$(basename "$final") was made with different inputs or parameters; redoing it:"
+        diff <(cat "$params") <(printf '%s\n' "$sig") | grep '^[<>]' | sed 's/^/    /' >&2 || true
+        return 1
+    fi
+    return 0
 }
 
 # Verify the temp output, index it, and only then promote it.
 #
 # Indexing happens before the rename on purpose: if tabix rejects the file the
 # run must not leave a plausible-looking output behind under its final name.
-dsv_output_commit() {              # dsv_output_commit <finalPath> [expected_body_rows]
-    local final="$1" expected="${2:-}" tmp actual
+# Contigs longer than 2^29 need a .csi index; tabix says so, and the second
+# attempt makes one.
+dsv_output_commit() {              # dsv_output_commit <finalPath> [expected_body_rows] [signature]
+    local final="$1" expected="${2:-}" sig="${3:-}" tmp actual idx
     tmp="$(dsv_output_tmp "$final")"
     [ -s "$tmp" ] || dsv_die "no output produced at $tmp"
 
@@ -177,10 +254,19 @@ dsv_output_commit() {              # dsv_output_commit <finalPath> [expected_bod
         dsv_log "row parity ok: $actual rows"
     fi
 
-    tabix -f -p bed "$tmp" || dsv_die "tabix rejected $tmp (is the header line prefixed with '#'?)"
+    if tabix -f -p bed "$tmp" 2>/dev/null; then
+        idx=tbi
+    elif tabix -f -p bed --csi "$tmp"; then
+        idx=csi
+        dsv_log "coordinates exceed the .tbi range; wrote a .csi index"
+    else
+        dsv_die "tabix rejected $tmp (is the header line prefixed with '#'?)"
+    fi
 
+    rm -f "${final}.tbi" "${final}.csi"
     mv "$tmp" "$final"
-    mv "${tmp}.tbi" "${final}.tbi"
+    mv "${tmp}.${idx}" "${final}.${idx}"
+    [ -z "$sig" ] || printf '%s\n' "$sig" > "$(dsv_output_params "$final")"
     echo "done" > "$(dsv_output_done "$final")"
     dsv_log "wrote $final"
 }
@@ -191,13 +277,23 @@ dsv_output_commit() {              # dsv_output_commit <finalPath> [expected_bod
 # realistic --sampleIdPattern, since PCREs are made of them.
 dsv_q() { printf '%q' "$1"; }
 
+# Fold permutation-maxima files (perm<TAB>max_abs_stat, '#' comments) into
+# the element-wise maximum per permutation, on stdout. Used per shard over
+# its chunks and at export over the shards.
+dsv_perm_fold() {                  # dsv_perm_fold <file>...
+    cat "$@" | grep -v -e '^#' -e '^perm' | sort -k1,1n \
+      | awk -F'\t' 'BEGIN{OFS="\t"} $1!=cur {if (NR>1) print cur, mx; cur=$1; mx=$2+0; next} $2+0>mx {mx=$2+0} END{if (NR) print cur, mx}'
+}
+
 # Sample name from a mosdepth file path: the basename with mosdepth's suffixes
-# removed. Lives here because the join driver and its extraction worker must
+# removed — `.regions.bed.gz`, then a `.by<binsize>` prefix suffix of any bin
+# size. Lives here because the join driver and its extraction worker must
 # agree on it exactly.
 dsv_sample_name() {
     local b="${1##*/}"
     b="${b%.gz}"; b="${b%.bed}"; b="${b%.regions}"
-    b="${b%.by1000}"; b="${b%.src}"
+    case "$b" in *.by[0-9]*) b="${b%.by[0-9]*}" ;; esac
+    b="${b%.src}"
     printf '%s\n' "$b"
 }
 

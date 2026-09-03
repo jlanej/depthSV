@@ -1,0 +1,4 @@
+phenotype R^2 on PC1 = 0.00 : lambda pipeline (y ~ x_res) = 1.009   full model (y ~ x + PCs) = 1.006   analytic 1-R^2 = 1.00
+phenotype R^2 on PC1 = 0.25 : lambda pipeline (y ~ x_res) = 0.754   full model (y ~ x + PCs) = 0.998   analytic 1-R^2 = 0.75
+phenotype R^2 on PC1 = 0.49 : lambda pipeline (y ~ x_res) = 0.518   full model (y ~ x + PCs) = 1.023   analytic 1-R^2 = 0.51
+phenotype R^2 on PC1 = 0.75 : lambda pipeline (y ~ x_res) = 0.240   full model (y ~ x + PCs) = 0.999   analytic 1-R^2 = 0.25

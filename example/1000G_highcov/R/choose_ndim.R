@@ -68,8 +68,10 @@ fit_one <- function(sv, n, p, margin, gap) {
   s_unit <- sqrt(p * qf(1 - (seq_len(k_rep) - 0.5) / n))   # noise singular value per rank, sigma = 1
   edge_unit <- sqrt(p) + sqrt(n)
   step <- function(k, m) {
+    # Fewer than ten ranks left past the gap: the reported spectrum does not
+    # reach the bulk (or the gap is too wide), so sigma cannot be fitted.
+    if (k + gap + 1 > k_rep - 9) return(NULL)
     ranks <- (k + gap + 1):k_rep
-    if (length(ranks) < 10) return(NULL)
     sigma <- exp(mean(log(sv[ranks] / s_unit[ranks])))
     edge <- sigma * edge_unit * (1 + m)
     list(sigma = sigma, edge = edge, k = sum(sv > edge))
@@ -100,7 +102,12 @@ for (r in runs) {
   label <- kv[1]; dir <- kv[2]
   svf <- file.path(dir, "svd.singularvalues.txt")
   if (!file.exists(svf)) { message("[ndim] ", label, ": no ", svf, " - skipped"); next }
-  sv <- fread(svf)[[2]]
+  svt <- fread(svf)
+  if (!"SINGULAR_VALUES" %in% names(svt)) {
+    stop(svf, " has no SINGULAR_VALUES column (columns: ", paste(names(svt), collapse = ", "), ")", call. = FALSE)
+  }
+  sv <- as.numeric(svt[["SINGULAR_VALUES"]])
+  if (is.unsorted(rev(sv))) stop(svf, ": singular values are not in decreasing order", call. = FALSE)
   n <- count_lines(file.path(dir, "svd.samples.txt"))
   p <- count_lines(file.path(dir, "svd.bins.txt"))
   f <- fit_one(sv, n, p, opt$margin, opt$gap)

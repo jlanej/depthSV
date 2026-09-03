@@ -40,11 +40,35 @@ for mode in $modes; do
     mkdir -p "$out"
     regions_opt=()
     [ ! -s "$(ex_regions_file "$mode")" ] || regions_opt=(--regions "$(ex_regions_file "$mode")")
+    # Provenance travels with the verdict: a synthetic smoke tree is labelled
+    # as such in the summary, not only in paths.env.
+    EX_M_SOURCE=""
+    # shellcheck disable=SC1090
+    [ ! -s "$(ex_paths_env "$mode")" ] || source "$(ex_paths_env "$mode")"
+
+    # The export first: every analysis over the whole region list, count
+    # suppression, and the empirical threshold from the permutation maxima.
+    # A failed export is reported but does not stop the truth checks.
+    export_opt=()
+    if [ -s "$(ex_regions_file "$mode")" ]; then
+        ex_export_dsv_env "$mode"
+        if ex_timed "$mode" export export -- \
+               bash "$DSV_ROOT/scripts/export.sh" --results "$assoc" --regions "$(ex_regions_file "$mode")" \
+                    --pheno-manifest "$in_dir/analyses.tsv" --out "$DSV_EXPORT_DIR"; then
+            export_opt=(--export "$DSV_EXPORT_DIR")
+        else
+            dsv_log "WARN: export failed for $mode (see above); evaluating the shards without it"
+            rc=1
+        fi
+    fi
+
     ex_timed "$mode" evaluate evaluate -- \
         Rscript "$EX_EXAMPLE_DIR/R/evaluate.R" \
             --assoc "$assoc" --analyses "$in_dir/analyses.tsv" \
             --mode "$mode" --profile "$EX_EVAL_PROFILE" --out "$out" \
-            ${regions_opt[@]+"${regions_opt[@]}"} \
+            --source "${EX_M_SOURCE:-unknown}" --pheno "$in_dir/phenotypes.tsv" \
+            --samples "$in_dir/samples.txt" --ploidy "$EX_PLOIDY" \
+            ${regions_opt[@]+"${regions_opt[@]}"} ${export_opt[@]+"${export_opt[@]}"} \
         || rc=1
 done
 

@@ -1,0 +1,4 @@
+N=200000  200-PC table, ndim=40  rows=1  wall   2.46s  cpu   4.92s  maxRSS   1224 MB  outrows 1
+N=200000  200-PC table, ndim=200 rows=1  wall   8.81s  cpu  17.62s  maxRSS   4450 MB  outrows 1
+N=500000  200-PC table, ndim=40  rows=1  wall   5.93s  cpu  11.86s  maxRSS   3027 MB  outrows 1
+N=500000  200-PC table, ndim=200 rows=1  wall  22.00s  cpu  44.00s  maxRSS  10451 MB  outrows 1

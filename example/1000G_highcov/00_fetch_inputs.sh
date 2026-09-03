@@ -148,12 +148,22 @@ for mode in $EX_MODES; do
 
         smoke_tree="$EX_SMOKE_DIR/$mode"
         have="$(count_mosdepth "$smoke_tree")"
-        if [ "$force" -eq 0 ] && [ "$have" -ge "$EX_SMOKE_SAMPLES" ]; then
-            dsv_log "simulated tree present ($have samples): $smoke_tree"
+        jitter=0
+        [ "$mode" = "fast" ] && jitter=0.01
+        # Reuse the simulated tree only if it was made with these parameters.
+        same_params=0
+        if [ -s "$smoke_tree/smoke.params.txt" ]; then
+            p_samples="$(awk -F'\t' '$1=="samples"{print $2}' "$smoke_tree/smoke.params.txt")"
+            p_seed="$(awk -F'\t' '$1=="seed"{print $2}' "$smoke_tree/smoke.params.txt")"
+            p_jitter="$(awk -F'\t' '$1=="jitter"{print $2}' "$smoke_tree/smoke.params.txt")"
+            [ "$p_samples" = "$EX_SMOKE_SAMPLES" ] && [ "$p_seed" = "$EX_SMOKE_SEED" ] \
+                && awk -v a="$p_jitter" -v b="$jitter" 'BEGIN{exit !(a+0 == b+0)}' && same_params=1
+        fi
+        if [ "$force" -eq 0 ] && [ "$have" -ge "$EX_SMOKE_SAMPLES" ] && [ "$same_params" -eq 1 ]; then
+            dsv_log "simulated tree present ($have samples, same parameters): $smoke_tree"
         else
+            rm -rf "$smoke_tree"
             dsv_require_cmd Rscript bgzip
-            jitter=0
-            [ "$mode" = "fast" ] && jitter=0.01
             dsv_log "simulating $EX_SMOKE_SAMPLES samples into $smoke_tree (jitter=$jitter)"
             Rscript "$EX_EXAMPLE_DIR/R/make_smoke_inputs.R" \
                 --qc "$qc_for_sim" --out "$smoke_tree" \
@@ -173,10 +183,14 @@ for mode in $EX_MODES; do
     if [ -s "$ngspca/svd.pcs.txt" ] && [ -s "$qcdir/sample_qc.tsv" ]; then
         write_paths_env "$mode" "$ngspca/svd.pcs.txt" "$qcdir/sample_qc.tsv" "$mosdepth_dir" \
                         "$(resolve_median "$ngspca")" "local"
-    elif [ "$mode" != seedctl ] && github_fetch_mode "$mode"; then
-        dsv_log "$mode: no local NGS-PCA outputs under $NGSPCA_WORK_DIR; using the committed GitHub results"
+    elif [ "$mode" != seedctl ] && [ "$EX_ALLOW_GITHUB_FALLBACK" = "1" ] && github_fetch_mode "$mode"; then
+        dsv_log "WARNING $mode: no local NGS-PCA outputs under $NGSPCA_WORK_DIR; using the COMMITTED GitHub PCs and medians with LOCAL depths (EX_ALLOW_GITHUB_FALLBACK=1). Those PCs were computed from another run's matrix."
         write_paths_env "$mode" "$EX_CACHE_DIR/$mode/svd.pcs.txt" "$EX_CACHE_DIR/$mode/sample_qc.tsv" \
-                        "$mosdepth_dir" "" "github"
+                        "$mosdepth_dir" "" "github-tables-with-local-depths"
+    elif [ "$mode" != seedctl ] && [ ! -s "$ngspca/svd.pcs.txt" ] && [ "$(count_mosdepth "$mosdepth_dir")" -gt 0 ]; then
+        dsv_log "SKIP $mode: mosdepth files exist under $mosdepth_dir but no NGS-PCA outputs under $ngspca / $qcdir."
+        dsv_log "       Run NGS-PCA's 02 and 03a/03 for this mode. (EX_ALLOW_GITHUB_FALLBACK=1 would pair these depths with the committed run's PCs instead.)"
+        continue
     elif [ "$mode" = seedctl ]; then
         dsv_log "SKIP seedctl: no seed-control PCs at $ngspca/svd.pcs.txt (needs $qcdir/sample_qc.tsv too)."
         dsv_log "       Produce them with NGS-PCA's step 2b, e.g."

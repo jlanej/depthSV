@@ -1,0 +1,8 @@
+gpaste    2 cols x 10000000 lines:   120.0 MB out in   0.85 s ->    142 MB/s
+gpaste   57 cols x  1000000 lines:   342.0 MB out in   2.48 s ->    138 MB/s
+gpaste  708 cols x   100000 lines:   424.8 MB out in   3.23 s ->    132 MB/s
+gpaste 1024 cols x    60000 lines:   368.6 MB out in   2.78 s ->    133 MB/s
+gpaste over 8 FIFOs fed by bgzip -dc: 424.8 MB in 1.60 s -> 265 MB/s
+bgzip -l 1 -@ 4  on paste output:  424.8 MB ->  165.1 MB (ratio 2.57) in  0.43 s ->   997 MB/s in
+bgzip -@ 4       on paste output:  424.8 MB ->  149.6 MB (ratio 2.84) in  2.69 s ->   158 MB/s in
+bgzip -@ 8       on paste output:  424.8 MB ->  149.6 MB (ratio 2.84) in  1.42 s ->   298 MB/s in

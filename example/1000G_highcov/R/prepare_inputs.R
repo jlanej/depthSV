@@ -41,6 +41,14 @@ option_list <- list(
               help = "NGS-PCA's autosomal.median.txt (SAMPLE, AUTO_HQ_median, N_BINS); optional"),
   make_option("--covariates", type = "character", default = NULL,
               help = "preamble covariates.tsv (SAMPLE, GPC1..); merged into the phenotype table"),
+  make_option("--null-from", type = "character", dest = "null_from", default = NULL,
+              help = "phenotypes.tsv of another mode whose null phenotypes are copied by sample ID"),
+  make_option("--unrelated", type = "character", default = NULL,
+              help = "preamble unrelated.txt (one ID per line): the *_UNREL phenotypes are restricted to it"),
+  make_option("--kinship", type = "character", default = NULL,
+              help = "prefix of a plink2 --make-king square matrix (<prefix>.king, <prefix>.king.id) for the structured null"),
+  make_option("--h2", type = "double", default = 0.5,
+              help = "heritability of the structured null y ~ MVN(0, h2 2K + (1-h2) I) [default %default]"),
   make_option("--suffix", type = "character", default = ".by1000.",
               help = "trailing suffix to strip from upstream sample IDs [default %default]"),
   make_option("--seed",   type = "integer",   default = 20260818L),
@@ -54,10 +62,28 @@ note <- function(...) message(sprintf(...))
 warned <- 0L
 warn <- function(...) { warned <<- warned + 1L; message("[warn] ", sprintf(...)) }
 
+# Replace an output only when its content changed: the pipeline keys finished
+# work on its inputs, and a byte-identical table rewritten with a new mtime
+# should not look like a new input.
+write_if_changed <- function(dt, path) {
+  tmp <- paste0(path, ".tmp")
+  fwrite(dt, tmp, sep = "\t")
+  if (file.exists(path) && isTRUE(unname(tools::md5sum(tmp)) == unname(tools::md5sum(path)))) {
+    unlink(tmp)
+    return(invisible(FALSE))
+  }
+  file.rename(tmp, path)
+  invisible(TRUE)
+}
+
 strip_suffix <- function(ids, suffix) {
-  ids <- as.character(ids)
+  # Upstream tables have carried IDs with a stray space BEFORE the suffix
+  # ("HG02635 .by1000."); fread trims one table's IDs and not the other's, so
+  # trim both before and after the suffix comes off.
+  ids <- trimws(as.character(ids))
   hit <- endsWith(ids, suffix)
   ids[hit] <- substr(ids[hit], 1L, nchar(ids[hit]) - nchar(suffix))
+  ids <- trimws(ids)
   attr(ids, "stripped") <- sum(hit)
   ids
 }
@@ -75,6 +101,7 @@ qc <- fread(opt$qc)
 for (col in c("SAMPLE_ID", "HQ_MEDIAN_COV", "MTDNA_CN", "INFERRED_SEX")) {
   if (!col %in% names(qc)) stop(opt$qc, " lacks the ", col, " column", call. = FALSE)
 }
+qc[, SAMPLE_ID := trimws(as.character(SAMPLE_ID))]
 if (anyDuplicated(qc$SAMPLE_ID)) stop("duplicated SAMPLE_ID in ", opt$qc, call. = FALSE)
 qc[, HQ_MEDIAN_COV := suppressWarnings(as.numeric(HQ_MEDIAN_COV))]
 qc[, MTDNA_CN := suppressWarnings(as.numeric(MTDNA_CN))]
@@ -124,7 +151,7 @@ if (!is.null(opt$median)) {
   note("[coverage] %d samples from the QC table's HQ_MEDIAN_COV -> autosomal.median.txt", nrow(cov))
 }
 if (!nrow(cov)) stop("no usable coverage medians; the correction stage needs them", call. = FALSE)
-fwrite(cov, file.path(opt$out, "autosomal.median.txt"), sep = "\t")
+write_if_changed(cov, file.path(opt$out, "autosomal.median.txt"))
 
 # --- phenotypes ------------------------------------------------------------
 
@@ -159,14 +186,34 @@ if (all(c("MITO_COV_RATIO", "MEAN_AUTOSOMAL_COV") %in% names(qc))) {
 
 pheno[, LOG2_MTDNA_CN := ifelse(is.finite(MTDNA_CN) & MTDNA_CN > 0, log2(MTDNA_CN), NA_real_)]
 
-# Permuted null: shuffle the observed values among the samples that have one.
-set.seed(opt$seed)
+# Permuted null: shuffle the observed values among the samples that have one
+# — or, for a second mode, copy the first mode's permutation by sample ID so
+# every mode tests the same null values (a tree with a different sample set
+# would otherwise get an unrelated permutation, and the cross-mode
+# comparison of the null would measure that, not the mode).
 pheno[, MTDNA_CN_NULL := NA_real_]
-have <- which(is.finite(pheno$MTDNA_CN))
-pheno$MTDNA_CN_NULL[have] <- sample(pheno$MTDNA_CN[have])
+copied <- character(0)
+if (!is.null(opt$null_from) && file.exists(opt$null_from)) {
+  src <- fread(opt$null_from)
+  src[, SAMPLE := trimws(as.character(SAMPLE))]
+  for (col in intersect(c("MTDNA_CN_NULL", "STRUCTURED_NULL", "COV_PC1_NULL"), names(src))) {
+    set(pheno, j = col, value = src[[col]][match(pheno$SAMPLE, src$SAMPLE)])
+    copied <- c(copied, col)
+  }
+  note("[phenotypes] %s copied from %s (MTDNA_CN_NULL for %d of %d samples)", paste(copied, collapse = ", "),
+       basename(opt$null_from), sum(is.finite(pheno$MTDNA_CN_NULL)), nrow(pheno))
+} else {
+  set.seed(opt$seed)
+  have <- which(is.finite(pheno$MTDNA_CN))
+  pheno$MTDNA_CN_NULL[have] <- sample(pheno$MTDNA_CN[have])
+}
 
 pheno[, SEX := fifelse(qc$INFERRED_SEX == "M", 1L,
                 fifelse(qc$INFERRED_SEX == "F", 0L, NA_integer_))]
+# The same sex as M/F, for the correction stage's ploidy model (which refuses
+# a 0/1 coding as ambiguous).
+pheno[, SEX_MF := fifelse(as.character(qc$INFERRED_SEX) %in% c("M", "F"),
+                          as.character(qc$INFERRED_SEX), NA_character_)]
 
 # Covariate candidates for models a user might add; unused by the shipped
 # analyses.tsv but free to carry.
@@ -189,10 +236,6 @@ if (!is.null(opt$covariates)) {
   if (n_hit < 0.9 * nrow(pheno)) warn("fewer than 90%% of samples have genotype PCs; adjusted models shrink accordingly")
 }
 
-fwrite(pheno, file.path(opt$out, "phenotypes.tsv"), sep = "\t")
-note("[phenotypes] %d samples (MTDNA_CN present for %d; SEX: %d M / %d F) -> phenotypes.tsv",
-     nrow(pheno), n_cn, sum(pheno$SEX == 1L, na.rm = TRUE), sum(pheno$SEX == 0L, na.rm = TRUE))
-
 # --- PC table --------------------------------------------------------------
 
 pcs <- fread(opt$pcs)
@@ -200,9 +243,63 @@ if (!"SAMPLE" %in% names(pcs)) stop(opt$pcs, " lacks a SAMPLE column", call. = F
 ids <- strip_suffix(pcs$SAMPLE, opt$suffix)
 if (anyDuplicated(ids)) stop("stripping '", opt$suffix, "' left duplicated sample IDs", call. = FALSE)
 pcs[, SAMPLE := as.character(ids)]
-fwrite(pcs, file.path(opt$out, "svd.pcs.txt"), sep = "\t")
+write_if_changed(pcs, file.path(opt$out, "svd.pcs.txt"))
 note("[pcs] %d samples, %d PCs; suffix '%s' stripped from %d IDs -> svd.pcs.txt",
      nrow(pcs), sum(grepl("^PC[0-9]+$", names(pcs))), opt$suffix, attr(ids, "stripped"))
+
+# --- nulls with structure, and the unrelated set ---------------------------
+
+# Coverage PC1 plus noise: half its variance is the structure the correction
+# removes, so a test that fails to condition on the removed PCs is deflated
+# on it (lambda ~ 0.5) while a correct one stays at 1. Copied from the first
+# mode when --null-from carries it, so every mode tests the same values.
+if (!"COV_PC1_NULL" %in% copied) {
+  set.seed(opt$seed + 2L)
+  pc1 <- pcs$PC1[match(pheno$SAMPLE, pcs$SAMPLE)]
+  pheno[, COV_PC1_NULL := as.numeric(scale(pc1)) + rnorm(.N)]
+  pheno[is.na(pc1), COV_PC1_NULL := NA_real_]
+}
+
+# Structured null: y ~ MVN(0, h2 * 2K + (1 - h2) I) from the KING kinship
+# (relatedness 2 phi, negatives clipped, unit diagonal). A permuted null
+# cannot show the relatedness effect; this one carries it by construction.
+if (!"STRUCTURED_NULL" %in% copied && !is.null(opt$kinship)) {
+  kf <- paste0(opt$kinship, ".king"); kid <- paste0(opt$kinship, ".king.id")
+  if (file.exists(kf) && file.exists(kid)) {
+    idt <- fread(kid, header = TRUE)
+    iid <- trimws(as.character(idt[[ncol(idt)]]))
+    K <- as.matrix(fread(kf, header = FALSE))
+    if (nrow(K) != length(iid) || ncol(K) != length(iid)) stop(kf, " does not match ", kid, call. = FALSE)
+    m <- match(pheno$SAMPLE, iid); have <- which(!is.na(m))
+    if (length(have) < 10L) stop("fewer than 10 phenotype samples have a kinship row", call. = FALSE)
+    R <- 2 * pmax(K[m[have], m[have], drop = FALSE], 0); diag(R) <- 1
+    V <- opt$h2 * R + (1 - opt$h2) * diag(length(have))
+    L <- chol(V)
+    set.seed(opt$seed + 3L)
+    pheno[, STRUCTURED_NULL := NA_real_]
+    pheno[have, STRUCTURED_NULL := as.numeric(crossprod(L, rnorm(length(have))))]
+    note("[structured null] h2=%.2f over %d samples with a kinship row (%d without)",
+         opt$h2, length(have), nrow(pheno) - length(have))
+  } else {
+    warn("no kinship matrix at %s(.king/.king.id); STRUCTURED_NULL not written", opt$kinship)
+  }
+}
+
+# The KING-unrelated set: the same phenotypes restricted to it, so the
+# relatedness effect is the difference between the two sweeps.
+if (!is.null(opt$unrelated) && file.exists(opt$unrelated)) {
+  ul <- trimws(readLines(opt$unrelated)); ul <- ul[nzchar(ul) & !startsWith(ul, "#")]
+  ul <- sub(".*[[:space:]]", "", ul)        # plink .id rows carry FID IID; keep the IID
+  in_u <- pheno$SAMPLE %in% ul
+  pheno[, MTDNA_CN_UNREL := ifelse(in_u, MTDNA_CN, NA_real_)]
+  pheno[, MTDNA_CN_NULL_UNREL := ifelse(in_u, MTDNA_CN_NULL, NA_real_)]
+  if ("STRUCTURED_NULL" %in% names(pheno)) pheno[, STRUCTURED_NULL_UNREL := ifelse(in_u, STRUCTURED_NULL, NA_real_)]
+  note("[unrelated] %d of %d samples are in %s", sum(in_u), nrow(pheno), basename(opt$unrelated))
+}
+
+write_if_changed(pheno, file.path(opt$out, "phenotypes.tsv"))
+note("[phenotypes] %d samples (MTDNA_CN present for %d; SEX: %d M / %d F; %d columns) -> phenotypes.tsv",
+     nrow(pheno), n_cn, sum(pheno$SEX == 1L, na.rm = TRUE), sum(pheno$SEX == 0L, na.rm = TRUE), ncol(pheno))
 
 # --- consistency -----------------------------------------------------------
 # The correction stage inner-joins PCs and coverage; a thin overlap there
@@ -212,8 +309,10 @@ note("[pcs] %d samples, %d PCs; suffix '%s' stripped from %d IDs -> svd.pcs.txt"
 overlap <- length(intersect(pcs$SAMPLE, cov$SAMPLE))
 note("[align] PC/coverage overlap: %d of %d PC samples", overlap, nrow(pcs))
 if (overlap == 0) stop("no overlap between PC and coverage sample IDs; check --suffix", call. = FALSE)
-if (overlap < 0.9 * nrow(pcs)) {
-  warn("PC/coverage overlap below 90%% - the correction stage will drop the difference")
+if (overlap < nrow(pcs)) {
+  only_pc <- setdiff(pcs$SAMPLE, cov$SAMPLE)
+  warn("%d PC sample(s) have no coverage median and will be dropped by the correction stage: %s",
+       length(only_pc), paste(utils::head(only_pc, 5), collapse = ", "))
 }
 
 if (warned > 0L) note("[prepare] finished with %d warning(s) - read them before running", warned)

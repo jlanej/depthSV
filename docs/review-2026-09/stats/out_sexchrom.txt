@@ -1,0 +1,38 @@
+chrY bins (null phenotype = real MTDNA_CN):
+   no zero-read bins: share of the within-sex depth SS carried by FEMALES: median 0.815
+   y raw, pooled with SEX+pop covariates                     lambda=22.632  P(p<.05)=0.9809  P(p<1e-4)=0.12487  P(p<5e-8)=1.25e-04
+   y rank-INT, pooled with SEX+pop                           lambda=23.110  P(p<.05)=0.9824  P(p<1e-4)=0.14113  P(p<5e-8)=2.50e-04
+   y raw, MALES ONLY (pop covariates)                        lambda=24.947  P(p<.05)=0.9779  P(p<1e-4)=0.22212  P(p<5e-8)=1.62e-03
+   y raw, pooled, coverage PCs IN the model (raw x)          lambda=0.955  P(p<.05)=0.0442  P(p<1e-4)=0.00025  P(p<5e-8)=0.00e+00
+   y raw, unadjusted pipeline model (no covariates)          lambda=9.746  P(p<.05)=0.8511  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00
+   fixed artefact -c*P_PC(sex) in x_res: ||.||^2 = 6593.2 vs within-sex noise SS per bin ~507.1 ; cor(artefact, PC-part of y) = -0.145
+   10% of female bin-values at zero reads (floor): female share of SS median 0.978; max single-sample share median 0.007
+   y raw, pooled with SEX+pop covariates                     lambda=1.752  P(p<.05)=0.0699  P(p<1e-4)=0.00013  P(p<5e-8)=0.00e+00
+   y rank-INT, pooled with SEX+pop                           lambda=1.799  P(p<.05)=0.0719  P(p<1e-4)=0.00013  P(p<5e-8)=0.00e+00
+   y raw, MALES ONLY (pop covariates)                        lambda=18.744  P(p<.05)=0.6685  P(p<1e-4)=0.33975  P(p<5e-8)=1.44e-01
+   y raw, pooled, coverage PCs IN the model (raw x)          lambda=0.916  P(p<.05)=0.0457  P(p<1e-4)=0.00013  P(p<5e-8)=0.00e+00
+
+chrX non-PAR null bins (males log2 -1, females 0, noise sd 0.1), phenotype = real MTDNA_CN:
+   y raw, pooled with SEX+pop covariates                     lambda=20.688  P(p<.05)=0.9679  P(p<1e-4)=0.08650  P(p<5e-8)=1.25e-04
+   y rank-INT, pooled with SEX+pop                           lambda=21.140  P(p<.05)=0.9748  P(p<1e-4)=0.09112  P(p<5e-8)=1.25e-04
+   y raw, unadjusted pipeline model                          lambda=10.640  P(p<.05)=0.9639  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00
+   y raw, pooled, coverage PCs IN the model (raw x)          lambda=0.988  P(p<.05)=0.0511  P(p<1e-4)=0.00025  P(p<5e-8)=0.00e+00
+   y raw, FEMALES ONLY (pop covariates)                      lambda=13.346  P(p<.05)=0.7678  P(p<1e-4)=0.01575  P(p<5e-8)=0.00e+00
+
+chrX non-PAR bin with a deletion at allele frequency 0.10; per-deleted-copy effect delta on y:
+   log2 value by class: female CN2 0.00, CN1 -1.00, CN0 -12.7 ; male CN1 -1.00, CN0 -12.7
+   pooled, SEX+pop covariates       median beta =   -2.182 (delta per copy = 24.15)  median |t| =   2.23  P(p<5e-8) = 0.000
+   females only                     median beta =   -3.888 (delta per copy = 24.15)  median |t| =   1.47  P(p<5e-8) = 0.001
+   males only                       median beta =   -1.915 (delta per copy = 24.15)  median |t| =   1.78  P(p<5e-8) = 0.000
+   the same with a ploidy-aware coding (copies relative to the sex's expected copies: 2*2^x/expected):
+   pooled, SEX+pop covariates       median beta =  -30.505  median |t| =   3.14  P(p<5e-8) = 0.002
+   females only                     median beta =  -44.631  median |t| =   2.77  P(p<5e-8) = 0.004
+   males only                       median beta =  -22.896  median |t| =   1.86  P(p<5e-8) = 0.000
+
+chrX non-PAR, NULL (no effect), pooled with SEX+pop, real MTDNA_CN: is the sex-dependent coding a calibration problem?
+   log2 coding, y raw                                        lambda=0.682  P(p<.05)=0.0165  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00
+   log2 coding, y rank-INT                                   lambda=0.614  P(p<.05)=0.0140  P(p<1e-4)=0.00000  P(p<5e-8)=0.00e+00
+
+sex_linear check (SEX ~ cov_resids): the chrY/chrX |t| it asserts on is the sex dichotomy itself:
+Error: object 'Xy' not found
+Execution halted

@@ -34,9 +34,9 @@ opt <- parse_args(OptionParser(option_list = option_list))
 for (req in c("qc", "out")) if (is.null(opt[[req]])) stop("--", req, " is required", call. = FALSE)
 
 needed <- c("SAMPLE_ID", "HQ_MEDIAN_COV", "X_COV_RATIO", "Y_COV_RATIO",
-            "MITO_COV_RATIO", "MEAN_AUTOSOMAL_COV")
+            "MITO_COV_RATIO", "MEAN_AUTOSOMAL_COV", "INFERRED_SEX")
 qc <- fread(opt$qc, select = needed)
-qc <- qc[complete.cases(qc) & HQ_MEDIAN_COV > 0]
+qc <- qc[complete.cases(qc) & HQ_MEDIAN_COV > 0 & INFERRED_SEX %in% c("M", "F")]
 if (!nrow(qc)) stop("no usable rows in ", opt$qc, call. = FALSE)
 if (nrow(qc) < opt$samples) {
   message(sprintf("[warn] only %d usable samples (requested %d)", nrow(qc), opt$samples))
@@ -71,10 +71,15 @@ auto_rows <- regions$CHR == "chr20"
 x_rows    <- regions$CHR == "chrX"
 y_rows    <- regions$CHR == "chrY"
 m_rows    <- regions$CHR == "chrM"
+# The sex chromosomes follow the inferred sex exactly — males at half the
+# autosomal median on X and Y, females at the median on X and ~1% on Y —
+# rather than the observed X/Y ratios, so the ploidy model is exact on this
+# tree and any sex signal left on chrX after correction is a wiring fault.
+male <- as.character(qc$INFERRED_SEX) == "M"
 for (j in seq_len(n)) {
   target[auto_rows, j] <- qc$HQ_MEDIAN_COV[j]
-  target[x_rows,    j] <- qc$HQ_MEDIAN_COV[j] * qc$X_COV_RATIO[j]
-  target[y_rows,    j] <- qc$HQ_MEDIAN_COV[j] * qc$Y_COV_RATIO[j]
+  target[x_rows,    j] <- qc$HQ_MEDIAN_COV[j] * if (male[j]) 0.5 else 1.0
+  target[y_rows,    j] <- qc$HQ_MEDIAN_COV[j] * if (male[j]) 0.5 else 0.01
   target[m_rows,    j] <- qc$MEAN_AUTOSOMAL_COV[j] * qc$MITO_COV_RATIO[j]
 }
 
@@ -83,6 +88,31 @@ for (j in seq_len(n)) {
 # signal survives the PC correction's absorption of that phenotype.
 bin_effect <- exp(rnorm(n_bins, sd = 0.08))
 depth <- target * bin_effect * matrix(exp(rnorm(n_bins * n, sd = 0.035)), n_bins, n)
+
+# Known deletions on the autosomal slice, for the SV-recovery stage: twelve
+# deletions of 5-30 kb with carrier frequencies from 5% to 40%, one copy
+# lost in carriers (a fifth of them lose both). Drawn after everything
+# above, so the rest of the tree is unchanged by their presence; the same
+# seed gives the fast tree the same carriers.
+set.seed(opt$seed + 2000L)
+auto_start <- min(regions$START[auto_rows]); auto_end <- max(regions$STOP[auto_rows])
+del_len  <- c(5, 8, 10, 15, 20, 30, 5, 10, 15, 20, 8, 12) * 1000L
+del_freq <- c(0.05, 0.10, 0.20, 0.30, 0.40, 0.10, 0.20, 0.05, 0.30, 0.15, 0.40, 0.25)
+slot <- (auto_end - auto_start) %/% length(del_len)
+calls <- list()
+for (i in seq_along(del_len)) {
+  s <- as.integer((auto_start + (i - 1L) * slot + 10000L) %/% bin * bin)   # inside its slot, bin-aligned
+  e <- s + del_len[i]
+  rows <- which(auto_rows & regions$START >= s & regions$STOP <= e)
+  n_car <- max(2L, round(del_freq[i] * n))
+  car <- sort(sample.int(n, n_car))
+  hom <- car[seq_len(round(0.2 * n_car))]
+  depth[rows, car] <- depth[rows, car] * 0.5
+  if (length(hom)) depth[rows, hom] <- depth[rows, hom] * 0.04
+  calls[[i]] <- data.table(CHROM = "chr20", START = s, END = e, ID = sprintf("smokeDEL%02d", i),
+                           N_CARRIERS = n_car, CARRIERS = paste(qc$SAMPLE_ID[car], collapse = ","))
+}
+calls <- rbindlist(calls)
 
 if (opt$jitter > 0) {
   set.seed(opt$seed + 1000L)
@@ -99,6 +129,8 @@ for (j in seq_len(n)) {
          f, sep = "\t", col.names = FALSE)
   if (system2("bgzip", c("-f", shQuote(f))) != 0L) stop("bgzip failed on ", f, call. = FALSE)
 }
+
+fwrite(calls, file.path(opt$out, "sv_calls.tsv"), sep = "\t")
 
 writeLines(c(sprintf("generated\t%s", format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC")),
              sprintf("qc\t%s", opt$qc),

@@ -1,0 +1,8 @@
+bins: 3000000
+per-sample file: 19.8 MB bgz, csi index 1113 bytes
+   25000 real 0.01 user 0.01 sys 0.00  (tabix csi: one 25 Mb window, 25k bins)
+  125000 real 0.06 user 0.04 sys 0.01  (5 windows)
+ 3000000 real 0.62 user 0.38 sys 0.03  (gzip -cd | gcut -f4  [GNU cut])
+ 3000000 real 1.05 user 1.12 sys 0.05  (gzip -cd | cut -f4  [BSD cut])
+ 3000000 real 1.21 user 1.05 sys 0.05  (gzip -cd | gawk)
+3404482207 71411204 real 1.73 user 1.95 sys 0.08  (one gawk pass: column + coordinate checksum)

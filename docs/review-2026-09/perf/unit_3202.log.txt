@@ -1,0 +1,23 @@
+matrix: 684519604 bytes; region rows: 25000
+tabix region -> /dev/null (one read)     wall     1.3s  cpu     2.6s  maxRSS     17 MB
+correct.sh ndim=20 jobs=8                wall    21.6s  cpu    43.3s  maxRSS    193 MB
+[2026-09-02T17:38:16Z] region chr1:1-25000000: 25000 input rows, ndim=20
+tbx_index_build3 failed: /private/tmp/claude-501/-Users-Kitty-git-depthSV/1db72424-c4a1-45f4-b81e-5b466f3ec8a4/scratchpad/review_perf/g3202/corrected/stats_ndim20.chr1_1-25000000.txt.gz
+[2026-09-02T17:38:36Z] FAILED (exit 1) at line 129: tabix -f -p bed "${stats}.gz"
+total 592416
+drwxr-xr-x@  5 Kitty  wheel        160 Sep  2 12:38 .
+drwxr-xr-x@ 10 Kitty  wheel        320 Sep  2 12:38 ..
+-rw-r--r--@  1 Kitty  wheel        559 Sep  2 12:38 corrected_ndim20.chr1_1-25000000.log
+-rw-r--r--@  1 Kitty  wheel  292020076 Sep  2 12:38 corrected_ndim20.chr1_1-25000000.txt.gz.tmp.gz
+-rw-r--r--@  1 Kitty  wheel    1309061 Sep  2 12:38 stats_ndim20.chr1_1-25000000.txt.gz
+corrected chunks (stats files merged): 25001 rows
+[E::hts_open_format] Failed to open file "g3202/corrected/corrected_ndim20.chr1_1-25000000.txt.gz" : No such file or directory
+Couldn't open "g3202/corrected/corrected_ndim20.chr1_1-25000000.txt.gz": No such file or directory
+tabix corrected region -> /dev/null      wall     0.0s  cpu     0.0s  maxRSS      6 MB
+analyze.sh 6-phenotype manifest jobs=8   wall     0.0s  cpu     0.0s  maxRSS      2 MB
+[bgzip] Could not open g3202/assoc/*.txt.gz: No such file or directory
+*.txt.gz                                                     0 rows
+analyze.sh mtdna_cn_adj (linear, 12 cov) wall     0.0s  cpu     0.0s  maxRSS      2 MB
+analyze.sh inferred_sex (logistic)       wall     0.0s  cpu     0.0s  maxRSS      2 MB
+analyze.sh linear jobs=1                 wall     0.0s  cpu     0.0s  maxRSS      2 MB
+correct.sh ndim=20 jobs=1                wall   114.4s  cpu   228.7s  maxRSS    193 MB

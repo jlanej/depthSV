@@ -12,6 +12,10 @@ first discretising depth into copy-number calls.
 
 ---
 
+**Documentation:** the methods, end to end, are laid out at
+[jlanej.github.io/depthSV](https://jlanej.github.io/depthSV/) (served from
+`docs/`; enable GitHub Pages from `main` / `docs` if the link is new).
+
 ## Scope
 
 **In scope:** joining per-sample depth into a matrix, normalisation and
@@ -61,12 +65,13 @@ scripts/analyze.sh \
   --corrected work/corrected/corrected_ndim4.chr1.txt.gz \
   --pheno tests/fixtures/phenotypes.tsv \
   --pheno-manifest conf/phenotypes.example.tsv \
+  --pcs tests/fixtures/svd.pcs.txt --case-level case --min-cases 5 \
   --region chr1 --out work/assoc -- --minObs 30
 ```
 
 ---
 
-## The three stages
+## The stages
 
 ### 1. Join — `scripts/join.sh`
 
@@ -76,15 +81,15 @@ The matrix is written with `bgzip` and a `tabix` index rather than plain gzip.
 That is what lets every later stage read a region instead of scanning the whole
 file, and it is what makes an arbitrary interval a valid unit of work.
 
-Row counts are verified inside every extraction worker. `paste` aligns by
-position and cannot tell that one sample was processed against a different
-contig set — the offending sample's depths would simply be attributed to the
-wrong coordinates, and nothing downstream would notice. A mismatch therefore
-stops the run at the offending sample, not at the end. `--strict-coords`
-additionally compares a checksum of the coordinate columns, which is worth
-enabling for data you did not generate yourself. A manifest listing the same
-sample twice is refused for the same reason: later stages match columns by
-name.
+Row counts and a checksum of the coordinate columns are verified inside every
+extraction worker, in the same decompression pass. `paste` aligns by position
+and cannot tell that one sample was processed against a different contig set
+or bin order — the offending sample's depths would simply be attributed to
+the wrong coordinates, and nothing downstream would notice. A mismatch
+therefore stops the run at the offending sample, not at the end. A manifest
+listing the same sample twice is refused for the same reason: later stages
+match columns by name. A finished matrix is reused only for the same manifest
+*content*; adding a sample and re-running rebuilds it.
 
 Columns are extracted `--jobs` at a time and pasted in batches sized near √N
 by default, which keeps every step clear of the open-file limit — the limit is
@@ -107,6 +112,16 @@ depth matrix to remove technical structure.
 remove depends on the batch structure of your cohort and is best established
 empirically against your own data; the pipeline does not assume a value.
 
+**Sex chromosomes are normalised by their expected copies** when a sex table
+is given (`--sex FILE`, `--sex-col NAME`; coded M/F, male/female or 1/2 —
+0/1 is refused as ambiguous), with the pseudo-autosomal regions from `--par`
+(`conf/par.grch38.bed`, `conf/par.grch37.bed`): chrX outside the PARs is one
+copy in males, chrY one copy in males and none in females, whose chrY depth
+becomes missing rather than the log2 of nothing. Without it every
+sex-chromosome bin is a sex indicator and dominates any phenotype that
+correlates with sex. The log2 ratio is floored at `--winsor-log2` (default
+−3) so a zero-depth sample cannot carry a region's whole leverage.
+
 Also writes per-region pre- and post-correction summary statistics. Nothing
 reads them automatically; they are the evidence for choosing the QC thresholds
 applied at the next stage.
@@ -125,9 +140,67 @@ Tests each region against a phenotype and streams one row of summary statistics
 per region.
 
 Pass `--model` and `--method` for a single analysis, or `--pheno-manifest` for a
-sweep. The manifest is tab-separated — `name`, `method`, `model` — so adding a
-phenotype is a line in a file. Analyses that already completed are skipped, so a
-sweep can be extended without repeating finished work.
+sweep. The manifest is tab-separated — `name`, `method`, `model`, and an
+optional fourth column of flags (`rank-int`, `robust`, comma-separated) — so
+adding a phenotype is a line in a file. Analyses that already completed are
+skipped, so a sweep can be extended without repeating finished work.
+
+**The PCs the correction removed are part of every model.** Residualising
+depth against PC1..PCk and then testing without those PCs in the model deflates
+every test by roughly 1 − R²(phenotype ~ PCs), and biases any bin that
+correlates with a covariate that itself correlates with a PC — every
+sex-chromosome bin once sex is a covariate. So the analysis stage appends
+PC1..PCk to the covariates of every model: `k` is read from the corrected
+file's name (`corrected_ndim<k>`), the table from `--pcs` or `DSV_PCS`, and a
+corrected matrix with k > 0 refuses to run without them (`--ndim 0` is the
+explicit opt-out). The design is still built once per worker; each region
+costs one projection, computed for a whole block of regions at a time.
+
+A binary response must be coded `0`/`1` or `TRUE`/`FALSE`, or be a two-level
+text column with the case named by `--case-level`; other codings are refused
+rather than guessed, because a guess once reversed effect directions. A
+binary or survival phenotype with fewer cases, controls or events than
+`--min-cases` (default 20) is refused up front.
+
+A region whose depth is missing for some samples — chrY in females under the
+ploidy model — is fitted on the samples that have it, with the design
+refactorised for that subset (and cached, since the subset is the same for
+every such region); nothing is imputed. Every row reports `MAXSHARE`, the
+largest share of the residualised depth's sum of squares carried by one
+sample, and a region above `--max-share` (default 0.5) is skipped: a test
+carried by one participant is the read-depth analogue of a minor allele
+count of one. `--rank-int` applies a rank-based inverse-normal transform to a
+quantitative response and `--robust` uses HC1 standard errors (linear) or the
+robust variance (Cox); both are also per-row manifest flags.
+
+`--perms B` (linear only) additionally writes, per shard, the largest |t|
+over the shard's tested regions for each of B permutations of the
+covariate-adjusted response (Freedman–Lane). Because the linear path is a
+projection, this is one extra matrix product per block. Every shard uses the
+same seed (`--perm-seed`), which is what lets the export step fold the shard
+maxima into one genome-wide distribution.
+
+### 4. Export — `scripts/export.sh`
+
+Turns the shards of one analysis (or of every row of a manifest) into a
+result. Every region in the list must have a finished shard — a lost array
+task is an error, not a shorter table, unless `--allow-missing`. The shards
+are concatenated in region order, bgzipped and indexed; rows whose `N`,
+`NCase` or `NControl` is below `--min-count` (default 20, the All of Us
+dissemination floor; 0 disables) are dropped and counted.
+
+The summary (`<name>.<method>.summary.tsv`) reports the genomic-control λ,
+the Bonferroni threshold and its hits, and — when the analysis ran with
+`--perms` — the empirical family-wise threshold at `--alpha` (the k-th
+largest permutation maximum, k = ⌊α(B+1)⌋, so B ≥ 19 at α = 0.05), the
+effective number of tests it implies (M_eff = log(1−α)/log(1−p_thr)), and
+the hits at that threshold. `<name>.<method>.hits.tsv` lists every region
+past either threshold with its adjusted p, (1 + #{maxima ≥ |t|})/(B+1).
+
+```bash
+scripts/export.sh --results work/assoc --regions regions.txt \
+                  --pheno-manifest conf/phenotypes.example.tsv --out work/export
+```
 
 ### Options
 
@@ -142,9 +215,18 @@ them prints the full usage. The rest are these:
 | `--force` | all | redo a unit that already completed |
 | `--min-obs N` | analyze | skip a region with fewer complete observations |
 | `--min-variance X` | analyze | skip a region whose depth does not vary |
+| `--min-cases N` | analyze | refuse a binary or survival phenotype with fewer cases, controls or events (default 20) |
+| `--max-share X` | analyze | skip a region where one sample carries more than this share of the residual depth sum of squares (default 0.5) |
+| `--rank-int`, `--robust` | analyze | inverse-normal transform of the response; HC1 / robust variance. Per row in a manifest: fourth column `rank-int,robust` |
+| `--perms B`, `--perm-seed S` | analyze | permutation maxima per shard for the empirical threshold (linear; `DSV_PERMS`, `DSV_PERM_SEED`) |
+| `--min-count N`, `--alpha X`, `--allow-missing` | export | count suppression floor (default 20); family-wise level (0.05); tolerate missing shards |
+| `--pcs FILE`, `--ndim K` | analyze | the PC table and count the correction used; `k` defaults to the corrected file's name, the table to `DSV_PCS` |
+| `--case-level L` | analyze | which level of a two-level text response is the case |
+| `--sex FILE`, `--sex-col NAME` | correct | per-sample sex, turning on the ploidy model for chrX/chrY (`DSV_SEX`, `DSV_SEX_COL`) |
+| `--par BED` | correct | pseudo-autosomal regions, diploid in both sexes (`conf/par.grch38.bed`) |
+| `--winsor-log2 X` | correct | floor on the log2 ratio (default −3) |
 | `--name` | analyze | label for a single-model run; defaults to the response variable |
 | `--batch-size N` | join | samples per `paste` batch; the default sizes it near √N, inside the open-file limit |
-| `--strict-coords` | join | also checksum the coordinate columns |
 | `--projection qr` | correct, analyze — after `--` | use the Householder projection instead of the default |
 | `--sampleIdPattern` | correct, analyze — after `--` | PCRE to recover sample IDs from column names |
 
@@ -189,8 +271,12 @@ scripts/regions.sh --matrix work/join/depth.matrix.txt.gz \
 ```
 
 A windowed list partitions the matrix: every bin lands in exactly one unit,
-with windows aligned up to bin edges, so concatenating the shards yields each
-region exactly once.
+with windows aligned up to bin edges (the bin size is read from the first
+data row, so bins are assumed uniform), so concatenating the shards yields
+each region exactly once. The sizes file may use either contig naming
+convention; a contig the matrix has and the sizes file lacks is reported on
+stderr rather than silently left out, and no match at all is an error.
+Contigs longer than 2²⁹ bp get a `.csi` index instead of `.tbi`.
 
 That one list drives every dispatcher, which is what keeps them interchangeable:
 
@@ -220,15 +306,31 @@ temporary file for inspection and no marker, so re-running redoes exactly that
 unit and nothing else. A failed join additionally resumes from its last
 finished batch.
 
+A finished unit is reused only for the same inputs and parameters. Each stage
+records what it computed — every input's identity (content checksum for the
+sample tables, size and mtime for the matrix), every parameter, the model
+formula, the driver's checksum — in a `.params` file beside the output, and a
+rerun whose signature differs redoes the unit and logs which lines changed. So
+a swapped coverage table, an edited model with the same name, a different
+`--min-obs`, or a grown manifest never inherits an old result. `--force`
+removes the markers first, so a forced run that then fails cannot leave the
+previous result behind under a valid marker. Two models of the same response
+under a defaulted name are refused rather than taking turns overwriting one
+output; give the second one `--name`.
+
 The correction and analysis stages keep each unit's R diagnostics in a `.log`
 beside its output; the sample-alignment drop counts there are the first thing
 to check when a cohort mismatch is suspected.
 
 The pipeline refuses to proceed on: a sample whose region count disagrees with
 the others, a manifest listing the same sample twice, a chromosome absent from
-the input, a duplicated `SAMPLE` in the phenotype table, an output that fails
-its integrity check, and a correction stage that produces fewer rows than it
-read.
+the input, a duplicated `SAMPLE` in the phenotype, PC or coverage table (or in
+the matrix header after `--sampleIdPattern`), a missing or non-positive
+coverage median, a sex table coded 0/1, a binary response whose coding is
+ambiguous, too few cases,
+a PC-corrected matrix analysed without its PCs, an association shard with no
+rows, an output that fails its integrity check, and a correction stage that
+produces fewer rows than it read.
 
 Contig names are resolved from the tabix index rather than assumed, so a matrix
 using `1` and one using `chr1` both work and a genuinely absent chromosome is an
@@ -245,7 +347,9 @@ error rather than an empty result.
 | principal components | `SAMPLE`, `PC1` … `PCn` |
 | coverage | `SAMPLE`, `AUTO_HQ_median` |
 | phenotypes | `SAMPLE` plus every term in your models; `SAMPLE` must be unique |
-| phenotype manifest | `name`, `method`, `model`, tab-separated, `#` for comments |
+| phenotype manifest | `name`, `method`, `model`, optional `flags`, tab-separated, `#` for comments |
+| sex table | `SAMPLE` and a sex column (M/F, male/female or 1/2); may be the phenotype table |
+| PAR | BED of the pseudo-autosomal regions (`conf/par.grch38.bed`, `conf/par.grch37.bed`) |
 
 If your matrix column names are not plain sample identifiers, pass
 `--sampleIdPattern` after `--` — a PCRE whose first capture group is kept. There is no
@@ -257,24 +361,39 @@ than none.
 One tab-separated row per tested region, bgzip-compressed and tabix-indexed:
 
 ```
-#CHROM  START  END  Region  N  NCase  NControl  <statistics>
+#CHROM  START  END  Region  N  NCase  NControl  <statistics>  MAXSHARE
 ```
 
-`N` is the number of complete observations the region was tested on.
-`NCase`/`NControl` are meaningful for logistic and Cox; for linear both carry
-the sample count.
+`N` is the number of samples the region was tested on: a sample whose depth
+is missing for the region (no expected copies — chrY in a female) is left out
+of that region's fit, not imputed. `NCase`/`NControl` are meaningful for
+logistic and Cox; for linear both carry the sample count. `MAXSHARE` is the
+largest share of the residualised depth's sum of squares carried by one
+sample (see `--max-share`).
 
-The trailing statistics are named by the fitted model, so the column set
-depends on the method:
+The statistics between them depend on the method:
 
-| Method | Trailing columns |
+| Method | Statistics |
 |---|---|
-| linear | `Estimate`, `Std. Error`, `t value`, `Pr(>\|t\|)` |
-| logistic | `Estimate`, `Std. Error`, `z value`, `Pr(>\|z\|)` |
-| coxph | `coef`, `exp(coef)`, `se(coef)`, `z`, `Pr(>\|z\|)` — five, not four |
+| linear | `BETA`, `SE`, `STAT` (t), `P`, `LOG10P` |
+| logistic | `BETA`, `SE`, `STAT` (Wald z), `P`, `LOG10P`, `LRT_P`, `CONVERGED` |
+| coxph | `BETA`, `HR`, `SE`, `STAT` (z), `P`, `LOG10P`, `CONVERGED` |
 
-Regions dropped by the quality-control filters are absent rather than reported
-as missing, so the row count is normally lower than the region count.
+`BETA` is per unit of corrected depth, i.e. per log2 ratio: a heterozygous
+deletion is about −1, a duplication about +0.58. `LOG10P` is −log10(P) computed
+in log space, so it does not underflow where `P` prints as `0`. For logistic,
+`LRT_P` is the likelihood-ratio p-value; under complete separation the Wald
+statistic collapses toward zero (Hauck–Donner) while the LRT does not, and
+`CONVERGED` says whether the fit converged. Regions dropped by the
+quality-control filters are absent rather than reported as missing, so the row
+count is normally lower than the region count; a shard with no rows at all is
+an error unless `DSV_ALLOW_EMPTY=1`.
+
+The export step writes one such table per analysis over the whole region
+list, plus `.summary.tsv` (counts, suppression, λ, thresholds, M_eff),
+`.hits.tsv` and the folded `.permmax.txt`. The per-region correction
+statistics carry per-bin minima and maxima — single participants' values —
+and stay in the workspace; only the export is meant to leave it.
 
 ---
 
@@ -294,6 +413,48 @@ See [`PLAN.md`](PLAN.md) for the design and the current state of that work.
 
 ---
 
+## Deploying on HPC and the cloud
+
+**SLURM.** `workflows/slurm_array.sh` is one array task per region; source
+your `conf/*.env` first, throttle the array (`%100`), split a list longer
+than the site's `MaxArraySize`, pass `--export=ALL` where the site default
+is `SBATCH_EXPORT=NONE`, and give `--output` a log directory rather than
+the checkout. Each task uses half its CPUs for workers and half for
+compression. The example under `example/1000G_highcov` shows a
+self-scheduling chain (join → dispatch → array → evaluate) built on the
+same scripts.
+
+**All of Us and the UK Biobank RAP** both run WDL on their own engines
+(Cromwell, dxCompiler). Two workflows are shipped:
+
+- `workflows/depthsv.wdl` — start from a joined matrix; every shard
+  localises the whole matrix. Right up to a few thousand samples.
+- `workflows/depthsv_blocks.wdl` — the biobank shape: `scripts/join.sh`
+  per block of ~1,000 samples, then per window `scripts/join_paste.sh`
+  reads that region from every block through its index and pastes the
+  cohort-wide window matrix for the task that corrects and analyses it. No
+  task ever sees the whole matrix and the multi-terabyte matrix is never
+  materialised.
+
+Both take the region list as a file, expose the ploidy, winsor, leverage
+and permutation options, set `TMPDIR` inside the task, request a boot disk
+and one retry, and return the indexes and per-unit logs beside the outputs.
+On dxCompiler the block matrices are streamed (`parameter_meta`); the
+whole-matrix workflow can stream too. Finish either with `scripts/export.sh`
+over the collected shards — it verifies coverage against the region list,
+suppresses counts below 20 (the All of Us dissemination floor) and derives
+the empirical threshold — and keep the correction statistics (per-bin
+minima and maxima) in the workspace.
+
+Platform notes: All of Us workers pull images through the workspace's
+Artifact Registry remote for Docker Hub and GHCR, and cannot reach GitHub
+or Dropbox — stage every input, including the PAR BED, in the workspace
+bucket; the CDR already ships ancestry PCs, as the RAP does genotype PCs
+(Data-Field 22009), so the example's plink2 recipe is for cohorts without
+them. On the RAP, `dx upload` the image tarball (`docker save`) or reference
+GHCR, and pass `dx_instance_type` through the runtime attributes if the
+default instance does not suit.
+
 ## Container
 
 ```bash
@@ -304,9 +465,14 @@ docker run --rm depthsv:dev /opt/depthsv/tests/smoke_test.sh /tmp/s
 The image pins R and a dated CRAN snapshot, so a rebuild resolves the same
 package versions rather than whatever is current. It carries no site
 configuration and no scheduler assumptions; the stages are separate commands
-that a workflow engine calls individually.
+that a workflow engine calls individually. CI publishes it for `linux/amd64`
+on every release tag as `ghcr.io/<owner>/depthsv:<version>` and prints the
+digest; a workflow input should pin that digest (`docker` in both WDLs
+defaults to the version tag). The image carries `VERSION` and the commit it
+was built from as OCI labels and under `/opt/depthsv/`.
 
-Results are byte-identical between the container and a host run.
+Results are byte-identical between the container and a host run; CI runs the
+suite in both.
 
 ## Requirements
 
@@ -340,6 +506,16 @@ tests/smoke_test.sh          # full pipeline on synthetic data
 ```
 
 The suite asserts on results rather than exit codes, and needs no cohort data.
+
+## Acknowledgements
+
+The 1000 Genomes example (`example/1000G_highcov/`, including its preamble
+for choosing the number of coverage PCs and building genotype-PC covariates)
+and the repository's structural and scientific reviews were developed by
+[Claude](https://claude.ai) (Anthropic; Claude Fable 5) working with the
+maintainer in Claude Code. Those commits carry a `Co-Authored-By` trailer.
+The design decisions, and any mistakes, were reviewed and accepted by the
+maintainer.
 
 ## Licence
 

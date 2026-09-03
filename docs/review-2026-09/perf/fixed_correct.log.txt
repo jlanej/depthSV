@@ -1,0 +1,13 @@
+real 3202 (200-PC table)         ndim=16  rows=1   wall   0.23s  cpu   0.46s  maxRSS    108 MB  outrows 0
+real 3202 (200-PC table)         ndim=40  rows=1   wall   0.21s  cpu   0.42s  maxRSS    107 MB  outrows 0
+real 3202 (200-PC table)         ndim=200 rows=1   wall   0.21s  cpu   0.42s  maxRSS    107 MB  outrows 0
+synthetic 3202 (40-PC table)     ndim=16  rows=1   wall   0.20s  cpu   0.40s  maxRSS     99 MB  outrows 1
+synthetic 3202 (40-PC table)     ndim=40  rows=1   wall   0.20s  cpu   0.40s  maxRSS    108 MB  outrows 1
+synthetic 50000 (40-PC table)    ndim=16  rows=1   wall   0.37s  cpu   0.74s  maxRSS    215 MB  outrows 1
+synthetic 50000 (40-PC table)    ndim=40  rows=1   wall   0.48s  cpu   0.96s  maxRSS    308 MB  outrows 1
+synthetic 200000 (40-PC table)   ndim=16  rows=1   wall   0.97s  cpu   1.94s  maxRSS    540 MB  outrows 1
+synthetic 200000 (40-PC table)   ndim=40  rows=1   wall   1.28s  cpu   2.56s  maxRSS   1073 MB  outrows 1
+synthetic 500000 (40-PC table)   ndim=16  rows=1   wall   2.18s  cpu   4.36s  maxRSS   1227 MB  outrows 1
+synthetic 500000 (40-PC table)   ndim=40  rows=1   wall   2.93s  cpu   5.86s  maxRSS   2413 MB  outrows 1
+synthetic 500000 (40-PC table)   ndim=40  rows=21  wall  14.74s  cpu  29.48s  maxRSS   2714 MB  outrows 21
+synthetic 200000 (40-PC table)   ndim=40  rows=40  wall   9.42s  cpu  18.84s  maxRSS   1179 MB  outrows 40

@@ -3,12 +3,19 @@
 # depthSV — normalise and correct one region of the depth matrix
 #
 #   scripts/correct.sh --matrix FILE --pcs FILE --coverage FILE \
-#                      --region chr1[:start-end] --out DIR [--ndim N]
+#                      --region chr1[:start-end] --out DIR [--ndim N] \
+#                      [--sex FILE [--sex-col NAME]] [--par BED] [--winsor-log2 X]
 #
 # The unit of work is a region, not a chromosome. That is what lets the same
 # script be driven by a SLURM array, a WDL scatter or a CSV fan-out without any
 # of them knowing about the others, and it is what makes a preempted job cheap
 # to retry.
+#
+# --sex (with --par for the pseudo-autosomal regions; conf/par.grch38.bed)
+# turns on the ploidy model: chrX outside the PARs is one copy in males,
+# chrY one copy in males and none in females. Without it every sex-chromosome
+# region is a sex indicator. --winsor-log2 floors the log2 ratio (default -3)
+# so a zero-depth sample cannot carry a region's whole leverage.
 #
 # Input regions are read through the tabix index rather than by scanning, so
 # this reads only what it needs.
@@ -21,29 +28,45 @@ matrix="${DSV_MATRIX:-}"; pcs="${DSV_PCS:-}"; coverage="${DSV_COVERAGE:-}"
 region=""; out_dir="${DSV_CORRECTED_DIR:-}"
 ndim="${DSV_NDIM:-16}"; jobs="${DSV_JOBS:-4}"; chunk="${DSV_CHUNK:-2000}"
 threads="${DSV_THREADS:-2}"; force=0; extra=()
+sex="${DSV_SEX:-}"; sex_col="${DSV_SEX_COL:-SEX}"; par="${DSV_PAR:-}"; winsor="${DSV_WINSOR_LOG2:-}"
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --matrix)   matrix="$2";   shift 2 ;;
-        --pcs)      pcs="$2";      shift 2 ;;
-        --coverage) coverage="$2"; shift 2 ;;
-        --region)   region="$2";   shift 2 ;;
-        --out)      out_dir="$2";  shift 2 ;;
-        --ndim)     ndim="$2";     shift 2 ;;
-        --jobs)     jobs="$2";     shift 2 ;;
-        --chunk)    chunk="$2";    shift 2 ;;
-        --threads)  threads="$2";  shift 2 ;;
-        --force)    force=1;       shift ;;
-        --)         shift; extra=("$@"); break ;;
-        -h|--help)  dsv_usage ;;
-        *)          dsv_die "unknown argument: $1" ;;
+        --matrix)      matrix="$2";   shift 2 ;;
+        --pcs)         pcs="$2";      shift 2 ;;
+        --coverage)    coverage="$2"; shift 2 ;;
+        --region)      region="$2";   shift 2 ;;
+        --out)         out_dir="$2";  shift 2 ;;
+        --ndim)        ndim="$2";     shift 2 ;;
+        --sex)         sex="$2";      shift 2 ;;
+        --sex-col)     sex_col="$2";  shift 2 ;;
+        --par)         par="$2";      shift 2 ;;
+        --winsor-log2) winsor="$2";   shift 2 ;;
+        --jobs)        jobs="$2";     shift 2 ;;
+        --chunk)       chunk="$2";    shift 2 ;;
+        --threads)     threads="$2";  shift 2 ;;
+        --force)       force=1;       shift ;;
+        --)            shift; extra=("$@"); break ;;
+        -h|--help)     dsv_usage ;;
+        *)             dsv_die "unknown argument: $1" ;;
     esac
 done
 
 dsv_require_opt matrix pcs coverage region out_dir
 dsv_require_file "$matrix" "$pcs" "$coverage"
-dsv_require_cmd bgzip tabix parallel Rscript
+[ -z "$sex" ] || dsv_require_file "$sex"
+[ -z "$par" ] || dsv_require_file "$par"
+
+# The ploidy model and the winsor go in FRONT of the user's passthrough, so
+# an explicit --winsorLog2 after `--` still wins.
+front=()
+[ -z "$sex" ]    || front+=(--sex "$sex" --sexCol "$sex_col")
+[ -z "$par" ]    || front+=(--par "$par")
+[ -z "$winsor" ] || front+=(--winsorLog2 "$winsor")
+extra=(${front[@]+"${front[@]}"} ${extra[@]+"${extra[@]}"})
+# Modules first: on a cluster the tools may only exist after `module load`.
 dsv_load_modules
+dsv_require_cmd bgzip tabix parallel Rscript
 
 rscript="${DSV_CORRECT_R:-$DSV_ROOT/R/correct.R}"
 dsv_require_file "$rscript"
@@ -56,11 +79,19 @@ slug="$(printf '%s' "$region" | tr ':' '_' | tr -d ' ')"
 final="$out_dir/corrected_ndim${ndim}.${slug}.txt.gz"
 stats="$out_dir/stats_ndim${ndim}.${slug}.txt"
 
-if [ "$force" -eq 0 ] && dsv_output_complete "$final"; then
+# What this unit is about to compute, so a finished unit is only reused for
+# the same inputs and parameters (a swapped coverage table or an edited
+# driver invalidates it; the region and ndim are in the filename already).
+sig="$(printf 'stage=correct\nmatrix=%s\npcs=%s\ncoverage=%s\nsex=%s\npar=%s\nregion=%s\nndim=%s\nextra=%s\nscript=%s\nrscript=%s' \
+       "$(dsv_file_sig "$matrix")" "$(dsv_file_sig "$pcs")" "$(dsv_file_sig "$coverage")" \
+       "$([ -z "$sex" ] || dsv_file_sig "$sex")" "$([ -z "$par" ] || dsv_file_sig "$par")" \
+       "$region" "$ndim" "${extra[*]+"${extra[*]}"}" "$(dsv_script_sig "$0")" "$(dsv_script_sig "$rscript")")"
+
+if [ "$force" -eq 0 ] && dsv_output_complete "$final" "$sig"; then
     dsv_log "already complete, skipping: $final"
     exit 0
 fi
-dsv_output_reset "$final"
+dsv_output_reset "$final" "$force"
 
 # R worker diagnostics — the [align] sample-drop counts, rank warnings and any
 # real error — go to a per-unit log rather than /dev/null. A wrong
@@ -71,7 +102,8 @@ log="$out_dir/corrected_ndim${ndim}.${slug}.log"
 # Column header of the matrix, needed by every parallel chunk.
 header_file="$(mktemp "${TMPDIR:-/tmp}/dsv.header.XXXXXX")"
 stats_dir="$(mktemp -d "${TMPDIR:-/tmp}/dsv.stats.XXXXXX")"
-trap 'rm -rf "$header_file" "$stats_dir"' EXIT
+basis="$(mktemp "${TMPDIR:-/tmp}/dsv.basis.XXXXXX")"
+trap 'rm -rf "$header_file" "$stats_dir" "$basis"' EXIT
 
 dsv_header "$matrix" > "$header_file"
 
@@ -79,25 +111,30 @@ n_in="$(dsv_read_region "$matrix" "$region" | wc -l | tr -d ' ')"
 dsv_log "region $region: $n_in input rows, ndim=$ndim"
 [ "$n_in" -gt 0 ] || dsv_die "region $region contains no rows"
 
+# Sample alignment and projection basis, computed once for the region from
+# the header alone. Every worker loads it instead of re-reading the PC table
+# and refactorising the design — at biobank width that prologue cost more
+# than the correction itself. Its diagnostics (the [align] drop counts, rank
+# warnings) go to the unit's log.
+# Note the ${arr[@]+"${arr[@]}"} idiom: under `set -u`, expanding an empty
+# array is an error on bash 3.2, which is what macOS still ships.
+: > "$log"
+Rscript "$rscript" --inputPCs "$pcs" --coverageStats "$coverage" --ndim "$ndim" \
+    --inputFile "$header_file" --saveBasis "$basis" ${extra[@]+"${extra[@]}"} 2>>"$log" \
+    || dsv_die "could not build the sample alignment / projection basis (see $log)"
+
 # One real data row, used both to probe the output header and to size the
 # parallel chunk. Read once rather than once per purpose.
 probe_row="$(mktemp "${TMPDIR:-/tmp}/dsv.row.XXXXXX")"
 out_header="$(mktemp "${TMPDIR:-/tmp}/dsv.outhdr.XXXXXX")"
-trap 'rm -rf "$header_file" "$stats_dir" "$probe_row" "$out_header"' EXIT
+trap 'rm -rf "$header_file" "$stats_dir" "$basis" "$probe_row" "$out_header"' EXIT
 set +o pipefail
 dsv_read_region "$matrix" "$region" | head -n 1 > "$probe_row"
-# Note the ${arr[@]+"${arr[@]}"} idiom: under `set -u`, expanding an empty
-# array is an error on bash 3.2, which is what macOS still ships.
 { cat "$header_file" "$probe_row"; } \
-  | Rscript "$rscript" --inputPCs "$pcs" --inputFile - --coverageStats "$coverage" \
-      --ndim "$ndim" ${extra[@]+"${extra[@]}"} 2>>"$log" | head -n 1 > "$out_header"
+  | Rscript "$rscript" --loadBasis "$basis" --inputFile - --ndim "$ndim" \
+      ${extra[@]+"${extra[@]}"} 2>/dev/null | head -n 1 > "$out_header"
 set -o pipefail
 [ -s "$out_header" ] || dsv_die "could not derive the output header from $rscript (see $log)"
-
-# The probe succeeded, so what it logged is only the SIGPIPE noise from having
-# its output truncated by `head`. Clear it: the log should hold the workers'
-# real diagnostics, not an expected artefact that reads like an error.
-: > "$log"
 
 chunk="$(dsv_chunk_lines "$probe_row" "$chunk")"
 
@@ -107,8 +144,7 @@ chunk="$(dsv_chunk_lines "$probe_row" "$chunk")"
 extra_q=""
 [ ${#extra[@]} -eq 0 ] || extra_q="$(printf '%q ' "${extra[@]}")"
 worker="cat $(dsv_q "$header_file") - | Rscript $(dsv_q "$rscript") \
-  --inputPCs $(dsv_q "$pcs") --inputFile - --coverageStats $(dsv_q "$coverage") \
-  --ndim $(dsv_q "$ndim") --skipOutputHeader \
+  --loadBasis $(dsv_q "$basis") --inputFile - --ndim $(dsv_q "$ndim") --skipOutputHeader \
   --statsFile $(dsv_q "$stats_dir")/stats.{#}.txt ${extra_q}2>>$(dsv_q "$log")"
 
 (
@@ -121,11 +157,19 @@ worker="cat $(dsv_q "$header_file") - | Rscript $(dsv_q "$rscript") \
 # marker written by dsv_output_commit is what makes a re-run skip this unit, so
 # anything produced after it would be permanently missing if the job were
 # interrupted in between.
+#
+# The chunk files are named by GNU parallel's job number, so a glob lists
+# them lexicographically (stats.1, stats.10, stats.11, ..., stats.2); from ten
+# chunks on that order is not coordinate order, and tabix refuses an unsorted
+# BED. Sort the merged body by contig and start before indexing.
 if compgen -G "$stats_dir/stats.*.txt" > /dev/null; then
-    head -n 1 "$(ls "$stats_dir"/stats.*.txt | head -1)" > "$stats"
-    for f in "$stats_dir"/stats.*.txt; do tail -n +2 "$f"; done >> "$stats"
-    bgzip -f "$stats" && tabix -f -p bed "${stats}.gz"
+    {
+        head -n 1 "$(ls "$stats_dir"/stats.*.txt | head -1)"
+        for f in "$stats_dir"/stats.*.txt; do tail -n +2 "$f"; done | sort -k1,1 -k2,2n
+    } > "$stats"
+    bgzip -f "$stats"
+    tabix -f -p bed "${stats}.gz" 2>/dev/null || tabix -f -p bed --csi "${stats}.gz"
     dsv_log "stats: ${stats}.gz"
 fi
 
-dsv_output_commit "$final" "$n_in"
+dsv_output_commit "$final" "$n_in" "$sig"

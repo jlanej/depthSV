@@ -31,7 +31,9 @@ corrected_ndim*
 stats_ndim*
 analysis_ndim*
 *.done
+*.params
 *.tbi
+*.csi
 *.log
 *.out
 *.err
@@ -40,3 +42,6 @@ slurm-*.out
 # Test scratch
 tests/fixtures/
 tests/scratch/
+
+# Claude Code session files (launch configs, local state)
+.claude/

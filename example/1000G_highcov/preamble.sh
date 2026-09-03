@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=dsvx-preamble
-#SBATCH --output=dsvx-preamble.%j.out
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=248G
 #SBATCH --time=24:00:00
 # ---------------------------------------------------------------------------
 # depthSV 1000G example — preamble: the number of PCs, and the covariates
 #
-#   sbatch preamble.sh                      # on the cluster, from this directory
+#   sbatch --output="$EX_WORK_DIR/logs/%x.%j.out" preamble.sh   # from this directory
 #   bash preamble.sh [--ndim-only | --genotypes-only] [--smoke] [--force]
+#
+# (No #SBATCH --output: that would write the log into the checkout.)
 #
 # Two decisions the association models depend on, made once, before the
 # pipeline runs, from data that is already on disk or a few gigabytes away:
@@ -62,8 +63,13 @@ fetch_url() {                      # fetch_url <url> <dest>
     local url="$1" dest="$2"
     if [ -s "$dest" ]; then dsv_log "present: $(basename "$dest")"; return 0; fi
     mkdir -p "$(dirname "$dest")"
-    curl -fsSL --retry 5 --retry-delay 5 -C - -o "$dest.part" "$url" \
-        || dsv_die "download failed: $url"
+    # Resume a partial download; if the server or the partial refuses the
+    # resume (curl 33/22), start it over rather than failing forever.
+    if ! curl -fsSL --retry 5 --retry-delay 5 -C - -o "$dest.part" "$url"; then
+        rm -f "$dest.part"
+        curl -fsSL --retry 5 --retry-delay 5 -o "$dest.part" "$url" \
+            || { rm -f "$dest.part"; dsv_die "download failed: $url"; }
+    fi
     if head -c 512 "$dest.part" | grep -qi '<html'; then
         rm -f "$dest.part"; dsv_die "got an HTML page instead of a file from $url"
     fi
@@ -76,10 +82,14 @@ fetch_url() {                      # fetch_url <url> <dest>
 # =============================================================================
 if [ "$do_ndim" -eq 1 ]; then
     dsv_require_cmd Rscript
+    # A previous decision must not survive a fit that cannot decide.
+    rm -f "$EX_PREAMBLE_DIR/ndim.txt" "$EX_PREAMBLE_DIR/ndim/ndim.txt"
     runs=""
     for mode in standard fast; do
         dir="$(ex_ngspca_dir "$mode")"
+        tried=""
         if [ ! -s "$dir/svd.singularvalues.txt" ] || [ "$EX_SMOKE" = "1" ]; then
+            tried=" or on GitHub ($EX_GITHUB_REPO@$EX_GITHUB_REF)"
             # Not on disk (or a smoke run): the committed GitHub results carry
             # the spectrum too. The seed control shares the standard spectrum
             # up to its reseed and is not consulted.
@@ -100,7 +110,7 @@ if [ "$do_ndim" -eq 1 ]; then
         if [ -s "$dir/svd.singularvalues.txt" ] && [ -s "$dir/svd.samples.txt" ] && [ -s "$dir/svd.bins.txt" ]; then
             runs="${runs:+$runs,}$mode=$dir"
         else
-            dsv_log "ndim: no spectrum for $mode (looked in $dir)"
+            dsv_log "ndim: no spectrum for $mode (looked in $(ex_ngspca_dir "$mode")$tried)"
         fi
     done
     [ -n "$runs" ] || dsv_die "no NGS-PCA spectrum found for any mode"
@@ -188,6 +198,20 @@ if [ "$do_geno" -eq 1 ]; then
                --king-cutoff "$EX_GENO_KING_CUTOFF" --out "$G/king"
     n_unrel="$(grep -vc '^#' "$G/king.king.cutoff.in.id")"
     dsv_log "unrelated set: $n_unrel samples ($(grep -vc '^#' "$G/king.king.cutoff.out.id") removed)"
+    # The unrelated set as bare IDs, for the restricted sweep, and the
+    # kinship matrix itself, for the structured null the prepare stage draws.
+    grep -v '^#' "$G/king.king.cutoff.in.id" | awk '{print $NF}' > "$EX_PREAMBLE_DIR/unrelated.txt.tmp"
+    mv "$EX_PREAMBLE_DIR/unrelated.txt.tmp" "$EX_PREAMBLE_DIR/unrelated.txt"
+    if [ "$force" -eq 0 ] && [ -s "$EX_PREAMBLE_DIR/kinship.king" ] && [ -s "$EX_PREAMBLE_DIR/kinship.king.id" ]; then
+        dsv_log "kinship matrix present"
+    else
+        dsv_log "KING kinship matrix (square) for the structured null"
+        ex_timed preamble geno-kinship all -- \
+            plink2 --pfile "$G/pruned" --threads "$threads" --memory "$mem" --silent \
+                   --make-king square --out "$G/kinship"
+        cp "$G/kinship.king" "$EX_PREAMBLE_DIR/kinship.king.tmp" && mv "$EX_PREAMBLE_DIR/kinship.king.tmp" "$EX_PREAMBLE_DIR/kinship.king"
+        cp "$G/kinship.king.id" "$EX_PREAMBLE_DIR/kinship.king.id"
+    fi
 
     dsv_log "PCA on the unrelated set ($EX_GENO_NPC PCs, allele weights)"
     ex_timed preamble geno-pca all -- \
@@ -217,12 +241,14 @@ fi
     echo
     echo "- written: $(dsv_now)"
     if [ -s "$EX_PREAMBLE_DIR/ndim.txt" ]; then
-        echo "- coverage PCs to remove (MP, averaged over modes): **$(cat "$EX_PREAMBLE_DIR/ndim.txt")** — see ndim/summary.md"
+        echo "- coverage PCs to remove (Marchenko-Pastur over: $(awk -F'\t' 'NR>1 && $NF=="ok"{printf "%s ", $1}' "$EX_PREAMBLE_DIR/ndim/ndim_by_mode.tsv" 2>/dev/null)): **$(cat "$EX_PREAMBLE_DIR/ndim.txt")** — see ndim/summary.md. Rerun 01_prepare_inputs.sh to freeze it into the run."
     else
         echo "- coverage ndim: not determined (see ndim/summary.md if present); EX_NDIM default applies"
     fi
     if [ -s "$EX_PREAMBLE_DIR/covariates.tsv" ]; then
         echo "- genotype PCs: covariates.tsv for $(( $(grep -c . "$EX_PREAMBLE_DIR/covariates.tsv") - 1 )) samples; the models use SEX + GPC1..GPC${EX_N_GPCS} (EX_N_GPCS / EX_COVARIATES)"
+        [ ! -s "$EX_PREAMBLE_DIR/unrelated.txt" ] \
+            || echo "- KING-unrelated set: $(grep -c . "$EX_PREAMBLE_DIR/unrelated.txt") samples (unrelated.txt) for the *_unrel sweep; kinship.king draws the structured null (EX_STRUCTURED_H2=$EX_STRUCTURED_H2)"
         echo
         cat "$EX_PREAMBLE_DIR/summary.md" 2>/dev/null | sed -n '2,$p' || true
     else

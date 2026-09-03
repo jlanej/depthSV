@@ -16,7 +16,8 @@
 # compare/summary.md states the calibration verdict per analysis: whether
 # fast mode moved the statistics more than a reseed did. Without a seed
 # control the fast comparison stands alone and says so; with only one mode
-# on disk the stage exits cleanly after writing a note.
+# on disk the stage exits cleanly after writing a note. A pair whose
+# concordance FAILs (an analysis missing on one side) fails this stage.
 # ---------------------------------------------------------------------------
 
 EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
@@ -44,32 +45,47 @@ if [ -d "$EX_PROFILE_DIR/timings.d" ]; then
     t_opt=(--timings "$timings")
 fi
 
-# compare_pair <a> <b> — runs when both modes have association output.
+mode_source() {                    # mode_source <mode> -> EX_M_SOURCE from paths.env
+    local EX_M_SOURCE=""
+    # shellcheck disable=SC1090
+    [ ! -s "$(ex_paths_env "$1")" ] || source "$(ex_paths_env "$1")"
+    printf '%s\n' "${EX_M_SOURCE:-unknown}"
+}
+
+# compare_pair <a> <b>: 2 = a mode has no output (not an error), 1 = the
+# comparison ran and FAILed, 0 = ran.
 compare_pair() {
     local a="$1" b="$2" a_dir b_dir out
     a_dir="$(ex_assoc_dir "$a")"; b_dir="$(ex_assoc_dir "$b")"
-    [ -d "$a_dir" ] && [ -d "$b_dir" ] || return 1
+    [ -d "$a_dir" ] && [ -d "$b_dir" ] || return 2
     out="$EX_COMPARE_DIR/${a}_vs_${b}"
     mkdir -p "$out"
     Rscript "$EX_EXAMPLE_DIR/R/compare_modes.R" \
         --a-dir "$a_dir" --b-dir "$b_dir" --a-name "$a" --b-name "$b" \
+        --a-source "$(mode_source "$a")" --b-source "$(mode_source "$b")" \
         --analyses "$(ex_inputs_dir "$a")/analyses.tsv" \
         --top-k "$EX_TOP_K" --profile "$EX_EVAL_PROFILE" \
         ${t_opt[@]+"${t_opt[@]}"} \
-        --out "$out"
+        --out "$out" || return 1
 }
 
-primary=""; control=""
-if compare_pair standard fast; then
-    primary="$EX_COMPARE_DIR/standard_vs_fast/concordance.tsv"
-else
-    dsv_log "standard vs fast: one of the modes has no association output yet"
-fi
-if compare_pair standard seedctl; then
-    control="$EX_COMPARE_DIR/standard_vs_seedctl/concordance.tsv"
-else
-    dsv_log "no seed-control results; the fast comparison will stand without its yardstick"
-fi
+rc=0; primary=""; control=""
+# The function's status is read inside an if: a bare non-zero return would
+# trip errexit before the case below could interpret it.
+if compare_pair standard fast; then st=0; else st=$?; fi
+case "$st" in
+    0) primary="$EX_COMPARE_DIR/standard_vs_fast/concordance.tsv" ;;
+    1) primary="$EX_COMPARE_DIR/standard_vs_fast/concordance.tsv"; rc=1
+       dsv_log "standard vs fast: concordance FAILED (see $EX_COMPARE_DIR/standard_vs_fast/summary.md)" ;;
+    2) dsv_log "standard vs fast: one of the modes has no association output yet" ;;
+esac
+if compare_pair standard seedctl; then st=0; else st=$?; fi
+case "$st" in
+    0) control="$EX_COMPARE_DIR/standard_vs_seedctl/concordance.tsv" ;;
+    1) control="$EX_COMPARE_DIR/standard_vs_seedctl/concordance.tsv"; rc=1
+       dsv_log "standard vs seedctl: concordance FAILED (see $EX_COMPARE_DIR/standard_vs_seedctl/summary.md)" ;;
+    2) dsv_log "no seed-control results; the fast comparison will stand without its yardstick" ;;
+esac
 
 if [ -z "$primary" ]; then
     {
@@ -87,8 +103,15 @@ if [ -z "$primary" ]; then
     exit 0
 fi
 
+note="Inputs — standard: \`$(mode_source standard)\`; fast: \`$(mode_source fast)\`"
+[ -z "$control" ] || note="$note; seedctl: \`$(mode_source seedctl)\`"
+case "$(mode_source fast)" in
+    *synthetic*) note="$note. **SYNTHETIC fast mode** (smoke): the fast depths were simulated from the standard tables, so this verdict tests the machinery, not mosdepth." ;;
+esac
 c_opt=()
 [ -z "$control" ] || c_opt=(--control "$control")
 Rscript "$EX_EXAMPLE_DIR/R/calibration_summary.R" \
     --primary "$primary" ${c_opt[@]+"${c_opt[@]}"} \
-    --factor "$EX_CALIBRATION_FACTOR" --out "$EX_COMPARE_DIR"
+    --factor "$EX_CALIBRATION_FACTOR" --exclude "inferred_sex" --note "$note" \
+    --out "$EX_COMPARE_DIR" || rc=1
+exit "$rc"
