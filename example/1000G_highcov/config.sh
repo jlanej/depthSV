@@ -98,8 +98,11 @@ EX_SMOKE_SEED="${EX_SMOKE_SEED:-20260818}"
 EX_PREAMBLE_DIR="${EX_PREAMBLE_DIR:-${EX_WORK_DIR}/preamble}"
 
 # Marchenko-Pastur cut for the coverage PCs: relative margin above the noise
-# edge (1% is about four Tracy-Widom sd at 3,202 x 142,070), and the ranks
-# skipped between the signal estimate and the noise fit.
+# edge, and the ranks skipped between the signal estimate and the noise fit.
+# The 1% margin is far larger than the Tracy-Widom fluctuation of the edge
+# (about 25 sd at 3,202 x 142,070): it absorbs the misfit between real,
+# heteroskedastic coverage noise and the iid MP model. Treat the 1-2% counts
+# as a range, and read sv_recovery/ for the count that keeps deletions.
 EX_MP_MARGIN="${EX_MP_MARGIN:-0.01}"
 EX_MP_GAP="${EX_MP_GAP:-20}"
 
@@ -216,7 +219,7 @@ EX_STRUCTURED_H2="${EX_STRUCTURED_H2:-0.5}"
 if [ "${EX_SMOKE}" = "1" ]; then
     EX_PERMS="${EX_PERMS:-50}"
 else
-    EX_PERMS="${EX_PERMS:-100}"
+    EX_PERMS="${EX_PERMS:-500}"
 fi
 EX_PERM_SEED="${EX_PERM_SEED:-1}"
 # Export: rows with N, NCase or NControl below this are suppressed.
