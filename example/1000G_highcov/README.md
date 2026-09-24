@@ -115,7 +115,10 @@ number of coverage PCs and the models adjust for sex and genotype PCs. See
 
 While the upstream comparison is still finishing, `bash run.sh --prepare-only`
 runs just the resolution and the checks (the [upstream checklist](#upstream-checklist))
-and stops before submitting anything.
+and stops before submitting anything. It is safe to run while the preamble
+is still going, too: stages 0 and 1 resolve afresh on every run, so running
+them again once it has finished freezes its ndim and covariates (see
+[Notes](#notes)).
 
 `run.sh` strings the numbered stages together; each can be run on its own.
 `02_run_depthsv.sh` submits, per prepared mode: a **join** job, then a
@@ -147,7 +150,10 @@ QC table — mosdepth trees are too large to commit). Smoke mode fetches
 those and **simulates** a small mosdepth tree per mode that is numerically
 consistent with each sample's real QC row (HQ median, X/Y ratios, chrM
 ratio) over chr20/chrX/chrY/chrM slices — so every truth check still
-fires, on any machine:
+fires, on any machine. The tree also carries the first megabase of chr22's
+short arm at zero depth in every sample, one work unit wholly inside an
+assembly gap, which must finish with an empty shard (see
+[Notes](#notes)):
 
 ```bash
 cd example/1000G_highcov
@@ -248,9 +254,9 @@ before all of them and runs once.
 
 | Stage | Script | What it does |
 |---|---|---|
-| 0 | `00_fetch_inputs.sh` | Resolve each mode's `svd.pcs.txt`, `sample_qc.tsv` and (when the run wrote one) `autosomal.median.txt`: local NGS-PCA trees first, the committed GitHub results as fallback; the seed control only locally. `EX_SMOKE=1` also simulates the mosdepth trees. Records the resolution in `inputs/<mode>/paths.env`. |
-| 1 | `01_prepare_inputs.sh` | Build depthSV's input tables per mode: PC table with the `.by1000.` sample suffix stripped, `SAMPLE`/`AUTO_HQ_median` coverage from NGS-PCA's own median table (else the QC table), the phenotype table and analysis manifest above, the mosdepth manifest, and `chrom.sizes` read from the first region file. Verifies the mosdepth↔coverage ID overlap *before* hours of joining, that `MTDNA_CN` was built on the same median, and that the modes' sample sets agree. |
-| 2 | `02_run_depthsv.sh` | Per prepared mode: `join` → windowed region list (`scripts/regions.sh`, filtered to `EX_CONTIG_REGEX`) → `correct` + `analyze` per region, as a SLURM chain or locally. `seedctl` reuses the standard matrix. Every stage runs under the timing recorder. |
+| 0 | `00_fetch_inputs.sh` | Resolve each mode's `svd.pcs.txt`, `sample_qc.tsv` and (when the run wrote one) `autosomal.median.txt`: local NGS-PCA trees first, the committed GitHub results as fallback; the seed control only locally. `EX_SMOKE=1` also simulates the mosdepth trees. Records the resolution in `inputs/<mode>/paths.env`, and warns when a rerun resolves different tables than the ones recorded there. |
+| 1 | `01_prepare_inputs.sh` | Build depthSV's input tables per mode: PC table with the `.by1000.` sample suffix stripped, `SAMPLE`/`AUTO_HQ_median` coverage from NGS-PCA's own median table (else the QC table), the phenotype table and analysis manifest above, the mosdepth manifest, and `chrom.sizes` read from the first region file. Verifies the mosdepth↔coverage ID overlap *before* hours of joining, that `MTDNA_CN` was built on the same median, and that the modes' sample sets agree. Freezes ndim, the covariates, window and thresholds into `inputs/run.env` for every later job, resolving them afresh on each run. |
+| 2 | `02_run_depthsv.sh` | Per prepared mode: `join` → windowed region list (`scripts/regions.sh`, filtered to `EX_CONTIG_REGEX`) → `correct` + `analyze` per region, as a SLURM chain or locally. `seedctl` reuses the standard matrix. Every stage runs under the timing recorder. A unit wholly inside an assembly gap finishes with an empty shard. |
 | 3 | `03_evaluate.sh` | The export of every analysis (`scripts/export.sh`: shards concatenated over the region list, counts below `EX_MIN_COUNT` suppressed, the empirical threshold from `EX_PERMS` permutations) → `work/<mode>/export_ndim<k>/`, then the truth checks per mode → `eval/<mode>/`. FAIL = machinery broken (non-zero exit); WARN = statistical expectation missed. |
 | 4 | `04_compare_modes.sh` | Association concordance for standard-vs-fast and standard-vs-seedctl → `compare/<a>_vs_<b>/`, and the calibration verdict → `compare/summary.md`. |
 | 5 | `05_profile.sh` | Timing + `sacct` aggregation → `profile/`. |
@@ -301,7 +307,8 @@ thresholds) without touching the pipeline output.
 - **`regions_unique` (FAIL)** — no bin tested twice: the windowed region
   list must partition the matrix.
 - **`all_units_reported` (WARN)** — one output shard per work unit per
-  analysis; fewer means lost array tasks.
+  analysis (a unit wholly inside an assembly gap reports an empty one);
+  fewer means lost array tasks.
 - **`top_autosomal_hits` (INFO)** — for the mtDNA phenotypes these are
   NUMT / mito-correlated candidates. On real data, expect some.
 
@@ -387,7 +394,7 @@ that matter most:
 | `EX_SEED_CONTROL_SEED` / `EX_NGSPCA_DIR_SEEDCTL` | 43 / `$NGSPCA_WORK_DIR/ngspca_output_seed43` | the seed-control PCA run (NGS-PCA step 2b) |
 | `EX_MEDIAN_SOURCE` | `auto` | `auto` prefers NGS-PCA's `autosomal.median.txt`, `qc` uses `HQ_MEDIAN_COV`, `ngspca` insists on the table |
 | `EX_CALIBRATION_FACTOR` | 1.5 | fast distance ≤ this × seed distance counts as "within seed noise" |
-| `EX_NDIM` | `preamble/ndim.txt`, else 20 | PCs removed by the correction; the preamble's MP count when it ran, an explicit value always wins |
+| `EX_NDIM` | `preamble/ndim.txt`, else 20 | PCs removed by the correction; the preamble's MP count when it ran, an explicit value always wins; frozen by stage 1 for the rest of the run |
 | `EX_MP_MARGIN` | 0.01 | relative margin above the MP edge for the PC counts (coverage and genotype) |
 | `EX_N_GPCS` / `EX_COVARIATES` | 10 / `SEX+GPC1..GPC10` when covariates exist, else `none` | covariate terms of the adjusted models |
 | `EX_PLOIDY` / `EX_PAR` | 1 / `conf/par.grch38.bed` | ploidy model for chrX/chrY from the inferred sex; 0 turns it off |
@@ -399,7 +406,7 @@ that matter most:
 | `EX_SV_RECOVERY` / `EX_SV_NDIMS` / `EX_SV_MAX_DELS` | 1 / `0 5 10 20 40 60` (+MP, +ndim) / 200 | the SV-callset recovery stage; `EX_SV_CALLSET_URL`, `EX_SV_CALLS`, `EX_SV_MIN_LEN`, `EX_SV_MIN_AF`, `EX_SV_MAX_AF` shape it |
 | `EX_GENO_CHROMS` | 1–22 (22 only in smoke) | chromosomes the genotype PCA uses |
 | `EX_PREAMBLE_MODULES` | `plink2` | modules loaded before plink2, where `module` exists |
-| `EX_WINDOW` | 10000000 | work-unit size in bp (~310 units over chr1–22,X,Y,M, ~150 s each at 3,202 samples); 0 = per contig |
+| `EX_WINDOW` | 10000000 | work-unit size in bp (~310 units over chr1–22,X,Y,M, ~150 s each at 3,202 samples; eight lie wholly in assembly gaps and finish with empty shards); 0 = per contig |
 | `EX_CONTIG_REGEX` | primary + chrM | which contigs get corrected/analysed (the matrix keeps everything) |
 | `EX_MIN_OBS` | 100 | per-region completeness floor at the analysis stage |
 | `EX_SBATCH_JOIN/UNIT/LIGHT` | see config | resources per job class |
@@ -435,11 +442,37 @@ the driver; you should not need to set it yourself here.
   with different inputs (a changed model, covariate set, threshold or
   coverage table is redone, not reused). `--force` redoes a mode's units
   deliberately. Stage 1 freezes the resolved `EX_NDIM`, `EX_COVARIATES`,
-  window and thresholds into `inputs/run.env`, which every later job loads
-  before `config.sh` — so a preamble finishing mid-run cannot change ndim
-  under the array. **Rerun `01_prepare_inputs.sh` after the preamble** to
-  pick up its ndim and covariates; the driver refuses to submit while a
-  `dsvx-preamble` job is still queued.
+  window and thresholds into `inputs/run.env`, which every later job —
+  stage 2's driver and the dispatch, array and evaluate jobs it submits,
+  and stages 3–6 — loads before `config.sh`, so a preamble finishing
+  mid-run cannot change ndim under the array. The stages that make the
+  freeze never load it: stages 0 and 1 (and `run.sh`, and the preamble)
+  resolve from the environment, then the preamble's files, then the
+  defaults, on every run. So **rerun `01_prepare_inputs.sh` (or
+  `run.sh --prepare-only`) after the preamble** to freeze its ndim and
+  covariates; the rerun logs what it changed (`re-frozen EX_NDIM: 20 -> 42`),
+  and the driver refuses to submit while a `dsvx-preamble` job is still
+  queued. An explicit `EX_NDIM` or `EX_COVARIATES` wins at every stage, but
+  like every other setting it has to be in the environment of each rerun
+  of stage 1; a rerun without it freezes the preamble's value, and says so.
+- **Stage 0 flags a switched upstream table.** It records each mode's PC,
+  QC and median tables and depth tree in `inputs/<mode>/paths.env`. A rerun
+  that resolves a different one logs `WARN <mode>: the upstream inputs
+  differ …` with the old and new paths: stage 1 then rebuilds the tables
+  from the new ones and every unit is redone on them. After an upstream
+  rerun that is the point; otherwise the shell lacks an override the first
+  run had (`EX_QC_DIR_<MODE>`, `EX_NGSPCA_DIR_<MODE>`, `NGSPCA_WORK_DIR`,
+  …) — restore it and rerun stages 0–1 before submitting.
+- **Assembly gaps finish empty.** mosdepth writes bins across GRCh38's
+  N-gaps, zero in every sample; the depth floor and the winsor put every
+  sample on the same value there, so no bin can be tested. At the default
+  10-Mb window eight units lie wholly in such gaps — `chr13`, `chr14`,
+  `chr15` and `chr22:1-10000000` (acrocentric short arms),
+  `chr1:130000001-140000000` (1q12), `chr9:50000001-60000000` (9q12),
+  `chrY:30000001-40000000` and `chrY:40000001-50000000` (Yq12) — and each
+  finishes with an empty shard, its analysis log counting every bin as
+  `constant`. An empty shard for any other reason stops the unit (see
+  [Troubleshooting](#troubleshooting)).
 - **Provenance travels with the verdicts.** Each mode's input source
   (`local`, `smoke:github`, `smoke:…synthetic-fast`, …) is printed in its
   evaluation summary and in the comparison; a synthetic fast tree is
@@ -485,6 +518,9 @@ genotype callset in PLINK 2 format from the PLINK 2.0 resources page.
 | dispatch job fails with `sbatch: command not found` | your site forbids submission from compute nodes; run `--stage dispatch --mode <m>` from a login node after the join finishes |
 | evaluation FAILs `chrM_top_hit` | inspect `work/<mode>/corrected/*.log` first — the `[align]` drop counts show a sample-ID mismatch immediately |
 | `all_units_reported` WARN | compare `squeue`/`sacct` for the array; resubmit `02_run_depthsv.sh` — completed units are skipped |
+| a unit dies with `<analysis> produced no result rows for <region>` | every region of that unit was skipped for a reason other than constant depth, and the message counts them: all below `--minObs` or `--minVariance` usually means a threshold too strict for the cohort (`EX_MIN_OBS`, `DSV_MIN_VARIANCE`). Once you have checked, `DSV_ALLOW_EMPTY=1` accepts the shard. A unit wholly inside an assembly gap does not stop: its shard is empty by design |
+| ndim or covariates are not the preamble's | the freeze predates the preamble: rerun `01_prepare_inputs.sh` (or `run.sh --prepare-only`) now that it has finished — it logs `re-frozen EX_NDIM: …`. An `EX_NDIM` or `EX_COVARIATES` still set in the environment wins over the preamble |
+| `WARN <mode>: the upstream inputs differ from the ones recorded` | this shell resolved another table than the earlier run did — usually a missing `EX_QC_DIR_<MODE>`, `EX_NGSPCA_DIR_<MODE>` or `NGSPCA_WORK_DIR`; restore it and rerun stages 0–1 before submitting, or every unit is redone on the new tables |
 | GitHub fetch fails | pin `EX_GITHUB_REF` to a tag/commit, or point `EX_NGSPCA_DIR_*`/`EX_QC_DIR_*` at local copies |
 | prepare warns `HQ_MEDIAN_COV ... matches autosomal.median.txt for only N%` | the upstream `03a` ran before `02`, or the fast `03a` without `NGSPCA_OUTPUT=…_fast`; rerun `03a` then `03` for that mode |
 | prepare stops: `MTDNA_CN is NA for every sample` | same cause, one step worse — no `HQ_MEDIAN_COV` at all; the phenotype does not exist until `03a`/`03` are rerun after `02` |

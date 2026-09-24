@@ -14,7 +14,9 @@
 # binary phenotype keeps its direction under either coding; the ploidy model
 # takes the sex signal out of chrX and fits chrY on males only; a zero-depth
 # sample is floored and a single-sample outlier region is skipped; a region
-# is a usable unit of work, including one wide enough to need ten chunks.
+# is a usable unit of work, including one wide enough to need ten chunks,
+# and one with no depth in any sample (an assembly gap), whose empty shard
+# is committed while an empty result for any other reason is refused.
 # ---------------------------------------------------------------------------
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
@@ -401,6 +403,54 @@ share="$(bgzip -dc "$work/share/quant_all.linear.chr1.txt.gz" | awk -F'\t' '$2==
 awk -v s="$share" 'BEGIN{exit !(s > 0.5 && s <= 1)}' \
   && ok "  --max-share 1 keeps it and reports MAXSHARE=$share" \
   || bad "  --max-share 1 did not report the outlier region's share (got '$share')"
+
+# A window wholly inside an assembly gap: mosdepth writes its bins, zero in
+# every sample, so the floor and the winsor put every sample on one value
+# and no bin can be tested. That shard is empty by design and is committed.
+# An empty result for any other reason is still refused — a mis-set
+# threshold, or every bin carried by one sample — unless DSV_ALLOW_EMPTY=1.
+mkdir -p "$work/gap/mosdepth"
+for f in "$fixtures"/mosdepth/*.gz; do
+    { gzip -cd "$f"; awk 'BEGIN { for (s = 0; s < 50000; s += 1000) printf "chr3\t%d\t%d\t0.00\n", s, s + 1000 }'; } \
+      | bgzip > "$work/gap/mosdepth/$(basename "$f")"
+done
+ls "$work/gap/mosdepth"/*.gz > "$work/gap/manifest.txt"
+gap_shard="$work/gap/assoc/quant_trait.linear.chr3.txt.gz"
+if bash "$DSV_ROOT/scripts/join.sh" --manifest "$work/gap/manifest.txt" --out "$work/gap/join" --threads 2 \
+        >"$work/gap.log" 2>&1 \
+   && bash "$DSV_ROOT/scripts/correct.sh" --matrix "$work/gap/join/depth.matrix.txt.gz" --pcs "$pcs" \
+        --coverage "$cov" --region chr3 --out "$work/gap/corrected" --ndim 4 --jobs 2 >>"$work/gap.log" 2>&1 \
+   && ( unset DSV_ALLOW_EMPTY
+        bash "$DSV_ROOT/scripts/analyze.sh" --corrected "$work/gap/corrected/corrected_ndim4.chr3.txt.gz" \
+          --pheno "$pheno" --pcs "$pcs" --model "quant_trait~cov_resids+age" --region chr3 \
+          --out "$work/gap/assoc" --jobs 2 -- --minObs 30 ) >>"$work/gap.log" 2>&1 \
+   && [ -f "$gap_shard.done" ]; then
+    check "a region with no depth in any sample (an assembly gap) commits an empty shard" \
+          "$(bgzip -dc "$gap_shard" | grep -cv '^#')" "0"
+    check "  every bin counted as constant" \
+          "$(awk '/^\[done\]/ { for (i = 2; i <= NF; i++) if ($i ~ /^constant=/) n += substr($i, 10) } END { print n + 0 }' \
+             "${gap_shard%.txt.gz}.log")" "50"
+else
+    bad_log "a region with no depth in any sample did not commit a shard" "$work/gap.log"
+fi
+for why in "--minVariance 1e9:below --minVariance" "--maxShare 0:carried by one sample"; do
+    if ( unset DSV_ALLOW_EMPTY
+         # shellcheck disable=SC2086
+         bash "$DSV_ROOT/scripts/analyze.sh" --corrected "$work/corrected/corrected_ndim4.chr1.txt.gz" \
+           --pheno "$pheno" --pcs "$pcs" --model "quant_trait~cov_resids+age" --name empty --region chr1 \
+           --out "$work/gap/refused" --jobs 2 --chunk 100 -- --minObs 30 ${why%%:*} ) >"$work/gap.refused.log" 2>&1; then
+        bad "  an empty result under ${why%%:*} was accepted"
+    else
+        check "  an empty result under ${why%%:*} is refused, naming the reason" \
+              "$(grep -c "200 ${why#*:}" "$work/gap.refused.log")" "1"
+    fi
+done
+DSV_ALLOW_EMPTY=1 bash "$DSV_ROOT/scripts/analyze.sh" --corrected "$work/corrected/corrected_ndim4.chr1.txt.gz" \
+    --pheno "$pheno" --pcs "$pcs" --model "quant_trait~cov_resids+age" --name empty --region chr1 \
+    --out "$work/gap/refused" --jobs 2 --chunk 100 -- --minObs 30 --maxShare 0 >"$work/gap.allowed.log" 2>&1 \
+  && [ -f "$work/gap/refused/empty.linear.chr1.txt.gz.done" ] \
+  && ok "  and accepted with DSV_ALLOW_EMPTY=1" \
+  || bad_log "  DSV_ALLOW_EMPTY=1 did not accept the empty result" "$work/gap.allowed.log"
 
 # Permutation maxima per shard, folded by the export step into an empirical
 # genome-wide threshold; coverage, ordering and count suppression there.

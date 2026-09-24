@@ -205,7 +205,7 @@ if (!is.null(opt$null_from) && file.exists(opt$null_from)) {
 } else {
   set.seed(opt$seed)
   have <- which(is.finite(pheno$MTDNA_CN))
-  pheno$MTDNA_CN_NULL[have] <- sample(pheno$MTDNA_CN[have])
+  set(pheno, i = have, j = "MTDNA_CN_NULL", value = sample(pheno$MTDNA_CN[have]))
 }
 
 pheno[, SEX := fifelse(qc$INFERRED_SEX == "M", 1L,
@@ -216,9 +216,10 @@ pheno[, SEX_MF := fifelse(as.character(qc$INFERRED_SEX) %in% c("M", "F"),
                           as.character(qc$INFERRED_SEX), NA_character_)]
 
 # Covariate candidates for models a user might add; unused by the shipped
-# analyses.tsv but free to carry.
+# analyses.tsv but free to carry. set(), not `[[<-`: base assignment copies
+# the table, and the next := then warns that it had to copy it again.
 for (extra in c("MEAN_AUTOSOMAL_COV", "SUPERPOPULATION", "POPULATION")) {
-  if (extra %in% names(qc)) pheno[[extra]] <- qc[[extra]]
+  if (extra %in% names(qc)) set(pheno, j = extra, value = qc[[extra]])
 }
 
 # Genotype PCs from the preamble, when it ran. A left join: a sample without

@@ -51,6 +51,10 @@ done
 [ "$smoke" -eq 0 ] || export EX_SMOKE=1
 
 EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
+# The preamble comes before the run's parameter freeze (stage 1) and feeds
+# it, so it never loads a previous freeze either (see lib.sh).
+# shellcheck disable=SC2034
+EX_RESOLVE_FRESH=1
 source "$EX_EXAMPLE_DIR/lib.sh"
 dsv_enable_error_trace
 [ "$want_help" -eq 0 ] || dsv_usage

@@ -22,9 +22,18 @@
 # is what 03_evaluate.sh asserts. The prepare step checks that the
 # phenotype's denominator is the median this pipeline normalises against,
 # and that the modes' sample sets agree, before any joining starts.
+#
+# Last, it freezes this run's parameters (ndim, covariates, window,
+# thresholds) into inputs/run.env for every later job. It resolves them
+# afresh each time — from the environment, then the preamble's files, then
+# config.sh's defaults — so rerunning it after the preamble picks up the
+# preamble's ndim and covariates, and says what changed.
 # ---------------------------------------------------------------------------
 
 EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
+# This stage makes the freeze, so it never loads the previous one (lib.sh).
+# shellcheck disable=SC2034
+EX_RESOLVE_FRESH=1
 source "$EX_EXAMPLE_DIR/lib.sh"
 dsv_enable_error_trace
 
@@ -182,21 +191,30 @@ done
 [ -n "$prepared" ] || dsv_die "no mode was prepared"
 
 # --- freeze this run's parameters ---------------------------------------------
-# Every later job re-sources config.sh, which re-derives EX_NDIM from
+# Every later job re-sources config.sh, which would re-derive EX_NDIM from
 # preamble/ndim.txt and EX_COVARIATES from covariates.tsv at that moment.
 # The values resolved HERE are what the tables above were built with, so
-# they are written as defaults that lib.sh loads before config.sh: an
-# explicit environment still wins, config defaults no longer do. Rerun this
-# stage after the preamble to re-freeze.
+# they are written as defaults that lib.sh loads before config.sh in every
+# later job: an explicit environment still wins, config defaults no longer
+# do. This stage (and stage 0) resolved them afresh, not from the previous
+# freeze, so a rerun after the preamble re-freezes the preamble's values.
+frozen_vars="EX_SMOKE EX_MODES EX_NDIM EX_COVARIATES EX_N_GPCS EX_WINDOW EX_MIN_OBS
+             EX_MEDIAN_SOURCE EX_CONTIG_REGEX EX_PHENO_SEED EX_EVAL_PROFILE EX_SAMPLE_SUFFIX"
 {
     printf '# frozen by 01_prepare_inputs.sh %s - explicit environment still wins\n' "$(dsv_now)"
-    for v in EX_SMOKE EX_MODES EX_NDIM EX_COVARIATES EX_N_GPCS EX_WINDOW EX_MIN_OBS \
-             EX_MEDIAN_SOURCE EX_CONTIG_REGEX EX_PHENO_SEED EX_EVAL_PROFILE EX_SAMPLE_SUFFIX; do
+    for v in $frozen_vars; do
         # A guarded plain assignment: %q quoting is exact there, whereas inside
         # a double-quoted ${VAR:=word} the backslashes would survive.
         printf '[ -n "${%s:+x}" ] || %s=%q\n' "$v" "$v" "${!v}"
     done
 } > "$EX_INPUTS_DIR/run.env.tmp"
+# What a rerun changed: a new ndim or covariate set redoes every unit.
+if [ -s "$EX_INPUTS_DIR/run.env" ]; then
+    for v in $frozen_vars; do
+        was="$(unset "$v"; . "$EX_INPUTS_DIR/run.env"; printf '%s' "${!v-}")"
+        [ "$was" = "${!v}" ] || dsv_log "re-frozen $v: ${was:-(unset)} -> ${!v}"
+    done
+fi
 install_if_changed "$EX_INPUTS_DIR/run.env.tmp" "$EX_INPUTS_DIR/run.env"
 dsv_log "frozen for this run: ndim=$EX_NDIM covariates=$EX_COVARIATES window=$EX_WINDOW min-obs=$EX_MIN_OBS -> $EX_INPUTS_DIR/run.env"
 

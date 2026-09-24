@@ -39,6 +39,14 @@
 # share of the residualised depth's sum of squares carried by one sample. A
 # region above --maxShare is a test of one participant — the read-depth
 # analogue of a minor allele count of one — and is skipped.
+#
+# The [done] line on stderr counts the skipped regions by reason. A skipped
+# region is `constant` when no sample's depth differs from another's beyond
+# rounding, a test that does not depend on --minVariance: a bin inside an
+# assembly gap reads zero in every sample and floors to one value.
+# scripts/analyze.sh reads these counts to tell a window with nothing to
+# test (an empty shard by design) from an empty result that means a
+# threshold or an input is wrong.
 # ---------------------------------------------------------------------------
 
 suppressPackageStartupMessages({
@@ -468,7 +476,13 @@ emit <- function(meta_row, n_obs, s, r) {
 # --- stream ----------------------------------------------------------------
 
 n_out <- 0L; n_skipped <- 0L; n_share <- 0L; n_error <- 0L
+n_constant <- 0L; n_min_obs <- 0L; n_min_var <- 0L   # reasons, within n_skipped
 region_cols <- 4L
+# A variance at or below this (an SD of 1e-10 log2 units) is a constant
+# region: a constant input leaves the correction as rounding noise, with a
+# variance near 1e-30. Fixed rather than --minVariance, so a mis-set
+# threshold is never mistaken for a region with nothing to test.
+constant_var <- 1e-20
 
 repeat {
   lines <- readLines(con, n = 10000L)   # parse in blocks; the caller caps lines per process
@@ -489,8 +503,13 @@ repeat {
 
   n_obs <- rowSums(!is.na(depth))
   row_var <- apply(depth, 1L, function(v) stats::var(v[!is.na(v)]))
-  ok <- n_obs >= opt$minObs & is.finite(row_var) & row_var > opt$minVariance
-  n_skipped <- n_skipped + sum(!ok)
+  few  <- n_obs < opt$minObs
+  flat <- !few & is.finite(row_var) & row_var <= opt$minVariance
+  ok   <- !few & is.finite(row_var) & row_var > opt$minVariance
+  n_skipped  <- n_skipped + sum(!ok)
+  n_min_obs  <- n_min_obs + sum(few)
+  n_constant <- n_constant + sum(flat & row_var <= constant_var)
+  n_min_var  <- n_min_var + sum(flat & row_var > constant_var)
   complete <- ok & n_obs == n_use
 
   # Complete regions of a linear model: one block projection for all of them.
@@ -555,4 +574,5 @@ if (n_perm > 0) {
              opt$permOut)
 }
 
-message(sprintf("[done] processed=%d skipped=%d single_sample=%d err=%d", n_out, n_skipped, n_share, n_error))
+message(sprintf("[done] processed=%d skipped=%d constant=%d min_obs=%d min_variance=%d single_sample=%d err=%d",
+                n_out, n_skipped, n_constant, n_min_obs, n_min_var, n_share, n_error))

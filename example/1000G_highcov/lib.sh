@@ -11,6 +11,8 @@
 # script into a spool directory, so dirname of the running script no longer
 # points at this directory. The driver exports EX_EXAMPLE_DIR before every
 # submission; SLURM_SUBMIT_DIR covers a script submitted by hand from here.
+# The stages that freeze the run's parameters also set EX_RESOLVE_FRESH=1
+# first (see the run.env load below).
 #
 # Loads the pipeline's own lib/common.sh (logging, guards, dsv_sample_name)
 # and config.sh, then adds what only the example needs: per-mode path
@@ -39,11 +41,20 @@ source "$EX_EXAMPLE_DIR/../../lib/common.sh"   # sets -euo pipefail, DSV_ROOT
 # The parameters stage 1 froze for this run (inputs/run.env) load BEFORE the
 # configuration, as defaults that only an explicit environment overrides:
 # every job of a submission then agrees on ndim and the covariates however
-# the preamble's files change underneath. The work-dir default here must
-# match config.sh's.
+# the preamble's files change underneath. The stages that MAKE the freeze —
+# 00 and 01, run.sh driving them, and the preamble before them — set
+# EX_RESOLVE_FRESH=1 before sourcing this file and resolve from the
+# environment and the preamble's files instead: loading the previous freeze
+# there would only freeze it again, so a rerun of stage 1 after the preamble
+# could never pick the preamble up. The work-dir default here must match
+# config.sh's.
 EX_WORK_DIR="${EX_WORK_DIR:-/scratch/${USER:-$(id -un)}/depthsv_1000G_highcov}"
-# shellcheck disable=SC1090
-[ ! -s "${EX_INPUTS_DIR:-$EX_WORK_DIR/inputs}/run.env" ] || source "${EX_INPUTS_DIR:-$EX_WORK_DIR/inputs}/run.env"
+if [ "${EX_RESOLVE_FRESH:-0}" != 1 ] && [ -s "${EX_INPUTS_DIR:-$EX_WORK_DIR/inputs}/run.env" ]; then
+    # shellcheck disable=SC1090
+    source "${EX_INPUTS_DIR:-$EX_WORK_DIR/inputs}/run.env"
+fi
+# Consumed here: were it ever exported, the jobs run.sh starts would inherit it.
+unset EX_RESOLVE_FRESH
 
 source "$EX_EXAMPLE_DIR/config.sh"
 
