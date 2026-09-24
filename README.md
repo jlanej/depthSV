@@ -276,7 +276,9 @@ data row, so bins are assumed uniform), so concatenating the shards yields
 each region exactly once. The sizes file may use either contig naming
 convention; a contig the matrix has and the sizes file lacks is reported on
 stderr rather than silently left out, and no match at all is an error.
-Contigs longer than 2²⁹ bp get a `.csi` index instead of `.tbi`.
+Contigs longer than 2²⁹ bp get a `.csi` index instead of `.tbi`. A window
+with no rows is left out; one wholly inside an assembly gap (rows, but zero
+depth in every sample) stays in, and its analysis shard is empty by design.
 
 That one list drives every dispatcher, which is what keeps them interchangeable:
 
@@ -329,8 +331,9 @@ the matrix header after `--sampleIdPattern`), a missing or non-positive
 coverage median, a sex table coded 0/1, a binary response whose coding is
 ambiguous, too few cases,
 a PC-corrected matrix analysed without its PCs, an association shard with no
-rows, an output that fails its integrity check, and a correction stage that
-produces fewer rows than it read.
+rows (other than one whose every region has constant depth), an output that
+fails its integrity check, and a correction stage that produces fewer rows
+than it read.
 
 Contig names are resolved from the tabix index rather than assumed, so a matrix
 using `1` and one using `chr1` both work and a genuinely absent chromosome is an
@@ -386,8 +389,11 @@ in log space, so it does not underflow where `P` prints as `0`. For logistic,
 statistic collapses toward zero (Hauck–Donner) while the LRT does not, and
 `CONVERGED` says whether the fit converged. Regions dropped by the
 quality-control filters are absent rather than reported as missing, so the row
-count is normally lower than the region count; a shard with no rows at all is
-an error unless `DSV_ALLOW_EMPTY=1`.
+count is normally lower than the region count. A shard with no rows at all is
+an error, naming how many regions each filter dropped, unless every region in
+it had constant depth — a window wholly inside an assembly gap, where every
+sample reads zero, has nothing to test and commits an empty shard — or
+`DSV_ALLOW_EMPTY=1` is set.
 
 The export step writes one such table per analysis over the whole region
 list, plus `.summary.tsv` (counts, suppression, λ, thresholds, M_eff),

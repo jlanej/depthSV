@@ -227,13 +227,31 @@ run_one() {                        # run_one <name> <method> <model> [defaulted_
           | parallel "${DSV_PARALLEL_FLAGS[@]}" --block "$DSV_BLOCK_BYTES" -L "$chunk" -j "$jobs" "$worker"
     ) | bgzip -@ "$threads" > "$(dsv_output_tmp "$final")"
 
-    # A result with no rows is not a result. The QC filters can drop every
-    # region of a small window legitimately, but at that point the caller
-    # must say so explicitly rather than inherit a green run.
-    local n_rows
+    # A result with no rows is not a result, with one exception: a window
+    # wholly inside an assembly gap (an acrocentric short arm, a block of
+    # heterochromatin). mosdepth writes its bins, zero in every sample, the
+    # floor and the winsor put every sample on one value, and no bin varies
+    # — nothing to test, so the shard is empty by design. The workers count
+    # their skips by reason, and an empty shard whose every region was
+    # constant is committed. Any other empty result (every region below
+    # --minObs or a mis-set --minVariance, carried by one sample, or failed)
+    # needs DSV_ALLOW_EMPTY=1: the caller must say so explicitly rather than
+    # inherit a green run.
+    local n_rows skipped constant min_obs min_var single err why
     n_rows="$(bgzip -dc "$(dsv_output_tmp "$final")" | grep -cv '^#' || true)"
-    if [ "$n_rows" -eq 0 ] && [ "${DSV_ALLOW_EMPTY:-0}" != "1" ]; then
-        dsv_die "$name produced no result rows for $region (every region failed QC?). Set DSV_ALLOW_EMPTY=1 to accept an empty shard."
+    if [ "$n_rows" -eq 0 ]; then
+        read -r skipped constant min_obs min_var single err <<< "$(awk '
+            /^\[done\]/ { for (i = 2; i <= NF; i++) { split($i, kv, "="); n[kv[1]] += kv[2] } }
+            END { printf "%d %d %d %d %d %d\n", n["skipped"], n["constant"], n["min_obs"],
+                                                n["min_variance"], n["single_sample"], n["err"] }' "$log")"
+        why="$skipped regions skipped ($constant constant, $min_obs below --minObs, $min_var below --minVariance, $err failed) and $single carried by one sample (--maxShare)"
+        if [ "$constant" -gt 0 ] && [ "$constant" -eq "$skipped" ] && [ "$single" -eq 0 ]; then
+            dsv_log "$name: no region of $region varies in depth across samples ($constant constant: an assembly gap?); committing an empty shard"
+        elif [ "${DSV_ALLOW_EMPTY:-0}" = "1" ]; then
+            dsv_log "WARNING: $name produced no result rows for $region: $why; accepted (DSV_ALLOW_EMPTY=1)"
+        else
+            dsv_die "$name produced no result rows for $region: $why. Only a region whose every bin is constant (an assembly gap) is empty by design; set DSV_ALLOW_EMPTY=1 to accept this shard anyway."
+        fi
     fi
 
     # Fold the per-chunk permutation maxima into one file per shard (the

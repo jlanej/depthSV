@@ -33,7 +33,7 @@ jobs:
 
       - name: Shell syntax
         run: |
-          for f in lib/*.sh scripts/*.sh tests/*.sh workflows/*.sh example/1000G_highcov/*.sh; do
+          for f in lib/*.sh scripts/*.sh tests/*.sh workflows/*.sh example/1000G_highcov/*.sh example/1000G_highcov/tests/*.sh; do
             bash -n "$f" || exit 1
           done
 
@@ -96,6 +96,16 @@ jobs:
           ! grep -q $'\tFAIL\t' "$W"/eval/*/checks.tsv
           awk -F'\t' 'NR>1 && $2 != "PASS" {print "non-PASS pair:", $0; bad=1} END {exit bad}' "$W/compare/standard_vs_fast/concordance.tsv"
           grep -iH 'verdict' "$W"/eval/*/summary.md "$W/compare/summary.md"
+          # The simulated assembly gap (chr22:0-1 Mb, zero depth in every
+          # sample) is a work unit with nothing to test: it must finish with
+          # an empty shard, every bin counted as constant, without
+          # DSV_ALLOW_EMPTY.
+          grep -qx 'chr22:1-1000000' "$W/regions/standard.regions.txt" || { echo "the gap unit is not in the region list"; exit 1; }
+          s="$W/work/standard/assoc_ndim4/mtdna_cn.linear.chr22_1-1000000"
+          [ -f "$s.txt.gz.done" ] || { echo "the gap unit has no finished shard"; exit 1; }
+          [ "$(gzip -cd "$s.txt.gz" | grep -vc '^#')" -eq 0 ] || { echo "the gap unit's shard has rows"; exit 1; }
+          [ "$(awk '/^\[done\]/ {for (i = 2; i <= NF; i++) if ($i ~ /^constant=/) n += substr($i, 10)} END {print n + 0}' "$s.log")" -eq 1000 ] \
+            || { echo "the gap unit's bins were not all counted as constant:"; cat "$s.log"; exit 1; }
           if ! bash example/1000G_highcov/run.sh --smoke --runner local > /tmp/rerun.log 2>&1; then
             echo "rerun exited non-zero; last 60 lines:"; tail -n 60 /tmp/rerun.log
             # The failing lines as check annotations too, so they are readable
@@ -105,6 +115,14 @@ jobs:
             exit 1
           fi
           [ "$(grep -c redoing /tmp/rerun.log)" -eq 0 ] || { echo "rerun redid units:"; grep redoing /tmp/rerun.log; exit 1; }
+
+      # Stages 0-1 make the run's parameter freeze, so rerunning them must
+      # resolve afresh: a prepare before the preamble froze ndim 20 and no
+      # covariates, and the rerun after it must freeze the preamble's. A
+      # real-mode configuration on a mock upstream assembled from the smoke
+      # run's inputs (read only), in its own work directory; no network.
+      - name: Rerunning stages 0-1 re-resolves the run
+        run: bash example/1000G_highcov/tests/rerun_prepare.sh /tmp/depthsv-example-smoke /tmp/depthsv-rerun-prepare
 
   macos:
     name: suite on macOS (bash 3.2)

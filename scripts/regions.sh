@@ -16,7 +16,9 @@
 # small enough to be cheap to lose on a preemptible instance. It needs a
 # chrom-sizes file (contig<TAB>length) because a tabix index does not record
 # contig lengths; empty intervals are skipped so the list never contains a unit
-# that would fail as "contains no rows".
+# that would fail as "contains no rows". An interval with rows but no depth —
+# wholly inside an assembly gap, zero in every sample — stays in the list: no
+# bin of it varies, and its analysis commits an empty shard (analyze.sh).
 #
 # The emitted intervals partition the matrix rows: consecutive windows never
 # both contain the same bin, so concatenating per-window outputs yields each

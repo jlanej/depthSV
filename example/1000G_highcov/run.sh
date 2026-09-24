@@ -19,7 +19,10 @@
 #   --smoke          EX_SMOKE=1: the committed upstream results plus simulated
 #                    depth trees, so the whole example runs anywhere in minutes
 #   --prepare-only   stop after the upstream checks and the input tables: the
-#                    preflight to run while the NGS-PCA comparison finishes
+#                    preflight to run while the NGS-PCA comparison (or the
+#                    preamble) finishes. Stages 0-1 resolve afresh on every
+#                    run, so a rerun afterwards freezes the preamble's ndim
+#                    and covariates
 #   --mode           one mode instead of every prepared one
 #   --runner         slurm or local (default: slurm wherever sbatch exists)
 #   --force          redo completed pipeline units (fetched inputs are kept)
@@ -46,13 +49,20 @@ done
 [ "$smoke" -eq 0 ] || export EX_SMOKE=1
 
 EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
+# Stages 0 and 1 below make this run's parameter freeze from the environment
+# and the preamble's files, not from the previous freeze; this driver
+# resolves the parameters the same way, so what it reports is what they
+# will freeze (see lib.sh).
+ndim_env="${EX_NDIM:-}"
+# shellcheck disable=SC2034
+EX_RESOLVE_FRESH=1
 source "$EX_EXAMPLE_DIR/lib.sh"
 dsv_enable_error_trace
 [ "$want_help" -eq 0 ] || dsv_usage
 
 dsv_log "depthSV 1000G example -> $EX_WORK_DIR (smoke=$EX_SMOKE, runner=$(ex_runner), modes: $EX_MODES)"
-if [ "$EX_SMOKE" = "1" ]; then ndim_src="smoke default"
-elif [ -s "$EX_INPUTS_DIR/run.env" ] && grep -q 'EX_NDIM' "$EX_INPUTS_DIR/run.env"; then ndim_src="frozen in inputs/run.env"
+if [ -n "$ndim_env" ]; then ndim_src="set in the environment"
+elif [ "$EX_SMOKE" = "1" ]; then ndim_src="smoke default"
 elif [ -s "$EX_PREAMBLE_DIR/ndim.txt" ]; then ndim_src="from the preamble"
 else ndim_src="default; preamble.sh not run"; fi
 dsv_log "ndim=$EX_NDIM ($ndim_src), covariates: $EX_COVARIATES"

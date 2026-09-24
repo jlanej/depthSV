@@ -47,7 +47,8 @@ n  <- nrow(qc)
 # --- bins ------------------------------------------------------------------
 # A deliberately small genome: one autosomal slice, non-PAR slices of X and
 # Y, and all of chrM. 1 kb bins to match the upstream convention (and the
-# .by1000 suffix the sample-name stripping expects).
+# .by1000 suffix the sample-name stripping expects). An assembly-gap slice
+# joins them at write time (below).
 
 bin <- 1000L
 mk <- function(chrom, from, to) {
@@ -119,6 +120,20 @@ if (opt$jitter > 0) {
   depth <- depth * exp(matrix(rnorm(n_bins * n, sd = opt$jitter), n_bins, n)) * 1.002
 }
 depth <- round(depth, 2)
+
+# An assembly gap: GRCh38 chr22 opens with ~10 Mb of acrocentric short arm
+# that is all N. mosdepth still writes those bins, zero in every sample, and
+# a work unit wholly inside such a gap has nothing to test — every bin is
+# constant — so its analysis must finish with an empty shard rather than
+# fail the run. This first megabase of it is one smoke work unit. Inserted
+# after every draw above, in reference order (chr20, chr22, chrX, ...), so
+# the rest of the tree is unchanged by it.
+gap <- mk("chr22", 0L, 1000000L)
+at  <- max(which(auto_rows))
+regions <- rbind(regions[seq_len(at)], gap, regions[-seq_len(at)])
+depth   <- rbind(depth[seq_len(at), , drop = FALSE], matrix(0, nrow(gap), n),
+                 depth[-seq_len(at), , drop = FALSE])
+n_bins  <- nrow(regions)
 
 # --- write -----------------------------------------------------------------
 

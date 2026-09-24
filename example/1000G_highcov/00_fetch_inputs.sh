@@ -17,9 +17,18 @@
 # simulates a small per-mode tree consistent with each sample's real QC row
 # (HQ median, X/Y ratios, chrM ratio), which is what makes the whole example
 # runnable, positive controls included, on a laptop or a login node.
+#
+# A rerun that resolves a mode differently from what paths.env recorded —
+# another QC table, PC table, median table or tree — says so: every unit
+# built on those inputs is redone, and the usual cause is a shell missing an
+# override the earlier run had.
 # ---------------------------------------------------------------------------
 
 EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
+# Stages 0 and 1 make the run's parameter freeze, so they resolve from the
+# environment, never from the previous freeze (see lib.sh).
+# shellcheck disable=SC2034
+EX_RESOLVE_FRESH=1
 source "$EX_EXAMPLE_DIR/lib.sh"
 dsv_enable_error_trace
 
@@ -98,7 +107,17 @@ write_paths_env() {                # write_paths_env <mode> <pcs> <qc> <mosdepth
         printf 'EX_M_MOSDEPTH_DIR=%q\n' "$4"
         printf 'EX_M_MEDIAN_TABLE=%q\n' "$5"
         printf 'EX_M_SOURCE=%q\n'       "$6"
-    } > "$envf"
+    } > "$envf.tmp"
+    # Deliberate after an upstream rerun; otherwise this is a shell missing
+    # an override the earlier run had, about to rebuild the phenotype (or
+    # the matrix) from another table. Either way, say so before stage 1 does.
+    if [ -s "$envf" ] && ! cmp -s <(grep -v '^#' "$envf") <(grep -v '^#' "$envf.tmp"); then
+        dsv_log "WARN $1: the upstream inputs differ from the ones recorded for this work directory ($envf):"
+        diff <(grep -v '^#' "$envf") <(grep -v '^#' "$envf.tmp") \
+            | sed -n -e 's/^< /    was: /p' -e 's/^> /    now: /p' >&2 || true
+        dsv_log "     every unit built on them will be redone. Unintended? Then this shell lacks an override the earlier run had (EX_QC_DIR_<MODE>, EX_NGSPCA_DIR_<MODE>, EX_MOSDEPTH_DIR_<MODE>, NGSPCA_WORK_DIR, EX_MEDIAN_SOURCE, ...)."
+    fi
+    mv "$envf.tmp" "$envf"
     dsv_log "$1: pcs+qc from $6; medians from ${5:-the QC table}; mosdepth dir: $4"
 }
 
@@ -150,13 +169,18 @@ for mode in $EX_MODES; do
         have="$(count_mosdepth "$smoke_tree")"
         jitter=0
         [ "$mode" = "fast" ] && jitter=0.01
-        # Reuse the simulated tree only if it was made with these parameters.
+        # Reuse the simulated tree only if it was made with these parameters
+        # by this simulator: a tree from an older layout would quietly skip
+        # whatever the current one adds.
+        simulator="$(dsv_script_sig "$EX_EXAMPLE_DIR/R/make_smoke_inputs.R")"
         same_params=0
         if [ -s "$smoke_tree/smoke.params.txt" ]; then
             p_samples="$(awk -F'\t' '$1=="samples"{print $2}' "$smoke_tree/smoke.params.txt")"
             p_seed="$(awk -F'\t' '$1=="seed"{print $2}' "$smoke_tree/smoke.params.txt")"
             p_jitter="$(awk -F'\t' '$1=="jitter"{print $2}' "$smoke_tree/smoke.params.txt")"
+            p_simulator="$(awk -F'\t' '$1=="simulator"{print $2}' "$smoke_tree/smoke.params.txt")"
             [ "$p_samples" = "$EX_SMOKE_SAMPLES" ] && [ "$p_seed" = "$EX_SMOKE_SEED" ] \
+                && [ "$p_simulator" = "$simulator" ] \
                 && awk -v a="$p_jitter" -v b="$jitter" 'BEGIN{exit !(a+0 == b+0)}' && same_params=1
         fi
         if [ "$force" -eq 0 ] && [ "$have" -ge "$EX_SMOKE_SAMPLES" ] && [ "$same_params" -eq 1 ]; then
@@ -168,6 +192,7 @@ for mode in $EX_MODES; do
             Rscript "$EX_EXAMPLE_DIR/R/make_smoke_inputs.R" \
                 --qc "$qc_for_sim" --out "$smoke_tree" \
                 --samples "$EX_SMOKE_SAMPLES" --seed "$EX_SMOKE_SEED" --jitter "$jitter"
+            printf 'simulator\t%s\n' "$simulator" >> "$smoke_tree/smoke.params.txt"
         fi
         write_paths_env "$mode" "$pcs" "$qc" "$smoke_tree" "" "smoke:$source_tag"
         resolved=$((resolved + 1))
