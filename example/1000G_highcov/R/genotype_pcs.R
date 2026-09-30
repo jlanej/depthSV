@@ -86,7 +86,9 @@ if (min(r2) < 0.99) {
 }
 
 proj <- sc[, c("SAMPLE", score_cols), with = FALSE]
-for (i in seq_len(k)) proj[[score_cols[i]]] <- proj[[score_cols[i]]] * scale[i]
+# set(), not `[[<-`: base assignment copies the table, and the := below then
+# warns that it had to copy it again.
+for (i in seq_len(k)) set(proj, j = score_cols[i], value = proj[[score_cols[i]]] * scale[i])
 setnames(proj, score_cols, sub("^PC", "GPC", pc_cols))
 proj[, GPC_PROJECTED := as.integer(!(SAMPLE %in% unrel_ids))]
 
