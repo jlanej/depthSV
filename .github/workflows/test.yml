@@ -124,6 +124,24 @@ jobs:
       - name: Rerunning stages 0-1 re-resolves the run
         run: bash example/1000G_highcov/tests/rerun_prepare.sh /tmp/depthsv-example-smoke /tmp/depthsv-rerun-prepare
 
+      # An interactive SLURM job (srun --pty, salloc) sets SLURM_SUBMIT_DIR to
+      # wherever the session started, and a stage run by hand there must still
+      # find its own directory: the prepare-only rerun is the command that once
+      # failed, and the failure exited 0, hence the grep. example_dir.sh checks
+      # every entry script, including the copy sbatch runs (found through the
+      # submit directory) and an exported EX_EXAMPLE_DIR (which wins).
+      - name: Entry scripts find their directory
+        env:
+          EX_WORK_DIR: /tmp/depthsv-example-smoke
+          EX_GITHUB_REF: af2c8fd
+        run: |
+          bash example/1000G_highcov/tests/example_dir.sh /tmp/depthsv-example-dir
+          cd example/1000G_highcov
+          SLURM_SUBMIT_DIR="$HOME" bash run.sh --smoke --prepare-only > /tmp/submit-dir.log 2>&1 \
+            || { tail -n 40 /tmp/submit-dir.log; exit 1; }
+          grep -q 'prepared modes: standard fast' /tmp/submit-dir.log \
+            || { echo "prepare-only did not prepare both modes:"; tail -n 40 /tmp/submit-dir.log; exit 1; }
+
   macos:
     name: suite on macOS (bash 3.2)
     runs-on: macos-latest
@@ -135,6 +153,8 @@ jobs:
         run: Rscript -e 'install.packages(c("optparse","data.table"), repos="https://cloud.r-project.org", quiet=TRUE)'
       - name: End-to-end smoke test under /bin/bash 3.2
         run: /bin/bash tests/smoke_test.sh /tmp/smoke-macos
+      - name: The example's entry scripts find their directory under /bin/bash 3.2
+        run: /bin/bash example/1000G_highcov/tests/example_dir.sh /tmp/example-dir-macos
 
   container:
     name: suite in the container

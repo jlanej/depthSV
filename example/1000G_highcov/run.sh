@@ -25,21 +25,29 @@
 #                    and covariates
 #   --mode           one mode instead of every prepared one
 #   --runner         slurm or local (default: slurm wherever sbatch exists)
-#   --force          redo completed pipeline units (fetched inputs are kept)
+#   --force          redo completed pipeline units (fetched inputs are kept),
+#                    and submit despite a change stages 0-1 report (below)
 #
 # Under SLURM this returns as soon as the chains are submitted; results land
 # under $EX_WORK_DIR when the last evaluate job finishes. Every stage can
 # still be run on its own — this only strings them together.
+#
+# When stage 0 reports a switched upstream table or stage 1 re-freezes a
+# parameter, and the work directory already holds finished units, this stops
+# before submitting (exit 3): 02 would redo those units on the new inputs.
+# Unintended - a shell missing an override the earlier run had - restore
+# the setting and rerun with --prepare-only first; intended, run this again:
+# the change is recorded by then, so it no longer stops.
 # ---------------------------------------------------------------------------
 
-smoke=0; prepare_only=0; want_help=0; run_args=()
+smoke=0; prepare_only=0; want_help=0; force=0; run_args=()
 while [ $# -gt 0 ]; do
     case "$1" in
         --smoke)        smoke=1; shift ;;
         --prepare-only) prepare_only=1; shift ;;
         --runner)       export EX_RUNNER="$2"; run_args+=("$1" "$2"); shift 2 ;;
         --mode)         run_args+=("$1" "$2"); shift 2 ;;
-        --force)        run_args+=(--force); shift ;;
+        --force)        force=1; run_args+=(--force); shift ;;
         -h|--help)      want_help=1; shift ;;
         *)              echo "unknown argument: $1 (see --help)" >&2; exit 2 ;;
     esac
@@ -48,7 +56,14 @@ done
 # thresholds) are decided there from EX_SMOKE.
 [ "$smoke" -eq 0 ] || export EX_SMOKE=1
 
-EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
+# This directory: an exported EX_EXAMPLE_DIR, else this script's own, else
+# SLURM_SUBMIT_DIR for the copy sbatch runs from its spool (see lib.sh).
+if [ -z "${EX_EXAMPLE_DIR:-}" ]; then
+    EX_EXAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    [ -s "$EX_EXAMPLE_DIR/lib.sh" ] || EX_EXAMPLE_DIR="${SLURM_SUBMIT_DIR:-$EX_EXAMPLE_DIR}"
+fi
+[ -s "$EX_EXAMPLE_DIR/lib.sh" ] \
+    || { echo "ERROR: $0: no lib.sh in $EX_EXAMPLE_DIR; export EX_EXAMPLE_DIR=<depthSV checkout>/example/1000G_highcov" >&2; exit 2; }
 # Stages 0 and 1 below make this run's parameter freeze from the environment
 # and the preamble's files, not from the previous freeze; this driver
 # resolves the parameters the same way, so what it reports is what they
@@ -69,6 +84,20 @@ dsv_log "ndim=$EX_NDIM ($ndim_src), covariates: $EX_COVARIATES"
 [ -s "$EX_PREAMBLE_DIR/covariates.tsv" ] \
     || dsv_log "no preamble covariates: the mtDNA-CN models run unadjusted (submit preamble.sh for genotype PCs and the MP-derived ndim)"
 
+# What stages 0 and 1 have recorded for this work directory - each mode's
+# upstream tables (paths.env) and the frozen parameters (run.env) - without
+# the timestamp comments: a change here is what stage 0's WARN and stage 1's
+# "re-frozen" report. Files they have not written yet are not a change.
+recorded() {                       # recorded <file>...
+    local f
+    for f in "$@"; do printf '== %s\n' "$f"; grep -v '^#' "$f" 2>/dev/null || true; done
+}
+was_recorded=()
+for f in "$EX_INPUTS_DIR"/*/paths.env "$EX_INPUTS_DIR/run.env"; do
+    [ ! -s "$f" ] || was_recorded+=("$f")
+done
+before="$(recorded ${was_recorded[@]+"${was_recorded[@]}"})"
+
 bash "$EX_EXAMPLE_DIR/00_fetch_inputs.sh"
 bash "$EX_EXAMPLE_DIR/01_prepare_inputs.sh"
 
@@ -79,6 +108,19 @@ dsv_log "prepared modes: $ready"
 if [ "$prepare_only" -eq 1 ]; then
     dsv_log "--prepare-only: stopping here. Any WARN above is the preflight finding; inputs are under $EX_INPUTS_DIR"
     exit 0
+fi
+
+# A switched upstream table or a re-frozen parameter, over finished units:
+# submitting now would redo them on the new inputs before anyone could act
+# on the WARN, so stop. --force redoes every unit anyway.
+if [ "$force" -eq 0 ] && [ "$(recorded ${was_recorded[@]+"${was_recorded[@]}"})" != "$before" ]; then
+    n_done="$(find "$EX_RUN_DIR" -name '*.done' 2>/dev/null | grep -c . || true)"
+    if [ "$n_done" -gt 0 ]; then
+        dsv_log "stopping before submitting: stages 0-1 changed what this run is built on (the WARN / re-frozen lines above), over $n_done finished unit(s) in $EX_RUN_DIR"
+        dsv_log "  not intended? restore the setting, run bash run.sh --prepare-only (it reports the switch back), then bash run.sh"
+        dsv_log "  intended? run bash run.sh again: the change is recorded now, and only the units it affects are redone (--force redoes every unit)"
+        exit 3
+    fi
 fi
 
 rc=0

@@ -2,17 +2,27 @@
 # ---------------------------------------------------------------------------
 # depthSV 1000G example — shared helpers
 #
-# Source this at the top of every stage script in this directory:
+# Source this at the top of every stage script in this directory, once the
+# script has found the directory:
 #
-#     EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
+#     if [ -z "${EX_EXAMPLE_DIR:-}" ]; then
+#         EX_EXAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+#         [ -s "$EX_EXAMPLE_DIR/lib.sh" ] || EX_EXAMPLE_DIR="${SLURM_SUBMIT_DIR:-$EX_EXAMPLE_DIR}"
+#     fi
+#     [ -s "$EX_EXAMPLE_DIR/lib.sh" ] || { echo "ERROR: $0: no lib.sh in ..." >&2; exit 2; }
 #     source "$EX_EXAMPLE_DIR/lib.sh"
 #
-# The EX_EXAMPLE_DIR dance matters under SLURM: sbatch copies the submitted
-# script into a spool directory, so dirname of the running script no longer
-# points at this directory. The driver exports EX_EXAMPLE_DIR before every
-# submission; SLURM_SUBMIT_DIR covers a script submitted by hand from here.
-# The stages that freeze the run's parameters also set EX_RESOLVE_FRESH=1
-# first (see the run.env load below).
+# The order matters under SLURM. An exported EX_EXAMPLE_DIR wins: the driver
+# exports it to every job it submits. Next comes the script's own directory,
+# whenever it holds this file - that is, unless sbatch is running a copy of
+# the script from its spool directory. Only for such a copy does
+# SLURM_SUBMIT_DIR stand in, which covers a script submitted by hand from
+# here. It cannot come first: an interactive job (srun --pty, salloc) sets it
+# too, to wherever that session started, and a stage run by hand inside one
+# would look for this file there. The check before sourcing turns a directory
+# without this file into one clear error instead of a cascade of "command not
+# found". The stages that freeze the run's parameters also set
+# EX_RESOLVE_FRESH=1 first (see the run.env load below).
 #
 # Loads the pipeline's own lib/common.sh (logging, guards, dsv_sample_name)
 # and config.sh, then adds what only the example needs: per-mode path
@@ -33,7 +43,7 @@
 EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 [ -s "$EX_EXAMPLE_DIR/config.sh" ] \
     || { echo "ERROR: $EX_EXAMPLE_DIR does not look like example/1000G_highcov (no config.sh)." >&2
-         echo "       Run from that directory, or export EX_EXAMPLE_DIR." >&2; exit 2; }
+         echo "       Export EX_EXAMPLE_DIR=<depthSV checkout>/example/1000G_highcov." >&2; exit 2; }
 export EX_EXAMPLE_DIR
 
 source "$EX_EXAMPLE_DIR/../../lib/common.sh"   # sets -euo pipefail, DSV_ROOT

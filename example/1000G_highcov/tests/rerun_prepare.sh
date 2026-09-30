@@ -14,7 +14,9 @@
 # which must freeze the preamble's ndim and write the adjusted manifest.
 # Then: an unchanged rerun rewrites no table; a later stage keeps the frozen
 # values when the preamble changes again; an explicit environment still
-# wins; and a stage-0 resolution that switches an upstream table says so.
+# wins; a stage-0 resolution that switches an upstream table says so; and
+# run.sh does not submit such a switch, or a re-freeze, over finished units
+# in the same invocation - a rerun or --force does.
 #
 # A real (non-smoke) configuration on a mock upstream tree assembled, read
 # only, from a finished smoke run: its cached NGS-PCA tables and its
@@ -126,6 +128,48 @@ check "a switched phenotype table is warned about" \
 check "  naming the new table" "$(grep -c "now: EX_M_QC_TABLE=$T/qc_alt/sample_qc.tsv" "$T/6.log")" "1"
 prepare "$T/7.log" EX_QC_DIR_STANDARD="$T/qc_alt" || bad "repeat prepare exited non-zero" "$T/7.log"
 check "  and only once" "$(grep -c 'WARN standard: the upstream inputs differ' "$T/7.log")" "0"
+
+# --- 7. run.sh does not submit such a change over finished units --------------
+# Submitting in the same invocation would redo them on the new inputs before
+# anyone could restore a lost override and rerun stages 0-1, as the README
+# advises. A stand-in scheduler records what would be submitted and runs
+# nothing; one finished unit on disk is work a change would redo.
+mkdir -p "$T/bin"
+cat > "$T/bin/sbatch" <<EOF
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$T/sbatch.calls"
+echo 4242
+EOF
+printf '#!/usr/bin/env bash\nexit 0\n' > "$T/bin/squeue"
+chmod +x "$T/bin/sbatch" "$T/bin/squeue"
+# submit <log> [--force] [VAR=value ...]: all of run.sh on the stand-in;
+# prints its exit status and how many joins it submitted.
+submit() {
+    local log="$1" force="" rc; shift
+    [ "${1:-}" != --force ] || { force=--force; shift; }
+    : > "$T/sbatch.calls"
+    env PATH="$T/bin:$PATH" EX_RUNNER=slurm "$@" bash "$here/run.sh" ${force:+"$force"} > "$log" 2>&1; rc=$?
+    printf 'exit %s, %s join submitted' "$rc" "$(grep -c -- '--stage join-exec' "$T/sbatch.calls")"
+}
+unit="$W/work/standard/assoc_ndim7/mtdna_cn.linear.chr1_1-10000000.txt.gz"
+mkdir -p "$(dirname "$unit")"; : > "$unit.done"
+stopped="exit 3, 0 join submitted"; went="exit 0, 1 join submitted"
+
+# The shell lacks the override the last prepare had: the table switches back.
+check "a switched table over a finished unit stops run.sh before submitting" \
+      "$(submit "$T/8.log")" "$stopped" "$T/8.log"
+prepare "$T/9.log" EX_QC_DIR_STANDARD="$T/qc_alt" || bad "prepare restoring the table exited non-zero" "$T/9.log"
+check "  restored and re-prepared, run.sh submits" \
+      "$(submit "$T/10.log" EX_QC_DIR_STANDARD="$T/qc_alt")" "$went" "$T/10.log"
+check "a re-frozen ndim over a finished unit stops it too" \
+      "$(submit "$T/11.log" EX_QC_DIR_STANDARD="$T/qc_alt" EX_NDIM=6)" "$stopped" "$T/11.log"
+check "  and run again, the change now recorded, it submits" \
+      "$(submit "$T/12.log" EX_QC_DIR_STANDARD="$T/qc_alt" EX_NDIM=6)" "$went" "$T/12.log"
+check "--force submits a change at once" \
+      "$(submit "$T/13.log" --force EX_QC_DIR_STANDARD="$T/qc_alt" EX_NDIM=5)" "$went" "$T/13.log"
+rm -f "$unit.done"
+check "with no finished unit, a change is submitted at once" \
+      "$(submit "$T/14.log" EX_QC_DIR_STANDARD="$T/qc_alt" EX_NDIM=4)" "$went" "$T/14.log"
 
 echo
 echo "passed $pass, failed $fail   ($T)"

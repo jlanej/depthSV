@@ -50,7 +50,14 @@ while [ $# -gt 0 ]; do
 done
 [ "$smoke" -eq 0 ] || export EX_SMOKE=1
 
-EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
+# This directory: an exported EX_EXAMPLE_DIR, else this script's own, else
+# SLURM_SUBMIT_DIR for the copy sbatch runs from its spool (see lib.sh).
+if [ -z "${EX_EXAMPLE_DIR:-}" ]; then
+    EX_EXAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    [ -s "$EX_EXAMPLE_DIR/lib.sh" ] || EX_EXAMPLE_DIR="${SLURM_SUBMIT_DIR:-$EX_EXAMPLE_DIR}"
+fi
+[ -s "$EX_EXAMPLE_DIR/lib.sh" ] \
+    || { echo "ERROR: $0: no lib.sh in $EX_EXAMPLE_DIR; export EX_EXAMPLE_DIR=<depthSV checkout>/example/1000G_highcov" >&2; exit 2; }
 # The preamble comes before the run's parameter freeze (stage 1) and feeds
 # it, so it never loads a previous freeze either (see lib.sh).
 # shellcheck disable=SC2034

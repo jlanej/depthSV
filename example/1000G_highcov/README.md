@@ -450,9 +450,10 @@ the driver; you should not need to set it yourself here.
   resolve from the environment, then the preamble's files, then the
   defaults, on every run. So **rerun `01_prepare_inputs.sh` (or
   `run.sh --prepare-only`) after the preamble** to freeze its ndim and
-  covariates; the rerun logs what it changed (`re-frozen EX_NDIM: 20 -> 42`),
-  and the driver refuses to submit while a `dsvx-preamble` job is still
-  queued. An explicit `EX_NDIM` or `EX_COVARIATES` wins at every stage, but
+  covariates; the rerun logs what it changed (`re-frozen EX_NDIM: 20 -> 42`)
+  — over finished units, `run.sh` then stops once before submitting (see
+  the next note) — and the driver refuses to submit while a `dsvx-preamble`
+  job is still queued. An explicit `EX_NDIM` or `EX_COVARIATES` wins at every stage, but
   like every other setting it has to be in the environment of each rerun
   of stage 1; a rerun without it freezes the preamble's value, and says so.
 - **Stage 0 flags a switched upstream table.** It records each mode's PC,
@@ -462,7 +463,13 @@ the driver; you should not need to set it yourself here.
   from the new ones and every unit is redone on them. After an upstream
   rerun that is the point; otherwise the shell lacks an override the first
   run had (`EX_QC_DIR_<MODE>`, `EX_NGSPCA_DIR_<MODE>`, `NGSPCA_WORK_DIR`,
-  …) — restore it and rerun stages 0–1 before submitting.
+  …) — restore it and rerun stages 0–1 before submitting. `run.sh` leaves
+  room for that: when stage 0 warns or stage 1 re-freezes a parameter and
+  the work directory holds finished units, it stops before submitting
+  (exit 3). Unintended: restore the setting, run `bash run.sh --prepare-only`
+  (it reports the switch back), then `bash run.sh`. Intended: run
+  `bash run.sh` again — the change is recorded by then, and only the units
+  it affects are redone. `--force` goes ahead at once, redoing every unit.
 - **Assembly gaps finish empty.** mosdepth writes bins across GRCh38's
   N-gaps, zero in every sample; the depth floor and the winsor put every
   sample on the same value there, so no bin can be tested. At the default
@@ -516,11 +523,13 @@ genotype callset in PLINK 2 format from the PLINK 2.0 resources page.
 | `no mosdepth sample matches the coverage table` | `EX_SAMPLE_SUFFIX` does not match the upstream naming; check one filename against the QC table's `SAMPLE_ID` |
 | join dies with `open files` | raise `ulimit -n` as the error says, or pass a smaller `--batch-size` via a manual join |
 | dispatch job fails with `sbatch: command not found` | your site forbids submission from compute nodes; run `--stage dispatch --mode <m>` from a login node after the join finishes |
+| a stage stops at once: `ERROR: …: no lib.sh in <dir>` | it could not find this directory. An exported `EX_EXAMPLE_DIR` wins, so check that first; otherwise a stage run by hand uses its own directory (from anywhere, inside an interactive SLURM job too), and one submitted with `sbatch` — a copy in SLURM's spool — the submit directory: submit from here, or export `EX_EXAMPLE_DIR` |
 | evaluation FAILs `chrM_top_hit` | inspect `work/<mode>/corrected/*.log` first — the `[align]` drop counts show a sample-ID mismatch immediately |
 | `all_units_reported` WARN | compare `squeue`/`sacct` for the array; resubmit `02_run_depthsv.sh` — completed units are skipped |
 | a unit dies with `<analysis> produced no result rows for <region>` | every region of that unit was skipped for a reason other than constant depth, and the message counts them: all below `--minObs` or `--minVariance` usually means a threshold too strict for the cohort (`EX_MIN_OBS`, `DSV_MIN_VARIANCE`). Once you have checked, `DSV_ALLOW_EMPTY=1` accepts the shard. A unit wholly inside an assembly gap does not stop: its shard is empty by design |
 | ndim or covariates are not the preamble's | the freeze predates the preamble: rerun `01_prepare_inputs.sh` (or `run.sh --prepare-only`) now that it has finished — it logs `re-frozen EX_NDIM: …`. An `EX_NDIM` or `EX_COVARIATES` still set in the environment wins over the preamble |
 | `WARN <mode>: the upstream inputs differ from the ones recorded` | this shell resolved another table than the earlier run did — usually a missing `EX_QC_DIR_<MODE>`, `EX_NGSPCA_DIR_<MODE>` or `NGSPCA_WORK_DIR`; restore it and rerun stages 0–1 before submitting, or every unit is redone on the new tables |
+| `run.sh` exits 3: `stopping before submitting: stages 0-1 changed what this run is built on` | the WARN or `re-frozen` line above it, over finished units. Not intended: restore the setting, `bash run.sh --prepare-only`, then `bash run.sh`. Intended: `bash run.sh` again (the change is recorded now); `--force` also goes ahead, redoing every unit |
 | GitHub fetch fails | pin `EX_GITHUB_REF` to a tag/commit, or point `EX_NGSPCA_DIR_*`/`EX_QC_DIR_*` at local copies |
 | prepare warns `HQ_MEDIAN_COV ... matches autosomal.median.txt for only N%` | the upstream `03a` ran before `02`, or the fast `03a` without `NGSPCA_OUTPUT=…_fast`; rerun `03a` then `03` for that mode |
 | prepare stops: `MTDNA_CN is NA for every sample` | same cause, one step worse — no `HQ_MEDIAN_COV` at all; the phenotype does not exist until `03a`/`03` are rerun after `02` |

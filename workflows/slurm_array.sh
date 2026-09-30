@@ -20,7 +20,9 @@
 # longer list into several arrays. No #SBATCH --output here: that would
 # write logs into the submit directory, which may be a read-only checkout.
 # --export=ALL carries the DSV_* environment through sites whose default is
-# SBATCH_EXPORT=NONE.
+# SBATCH_EXPORT=NONE. Submit from the checkout's root, or export DSV_ROOT:
+# the copy of this script that sbatch runs finds the stage scripts through
+# the submit directory.
 #
 # Completed units are skipped, so a partially failed array can be resubmitted
 # whole and only redoes what is missing.
@@ -31,10 +33,16 @@ set -euo pipefail
 
 region_list="${1:?usage: sbatch --array=1-N slurm_array.sh <regions.txt>}"
 
-# sbatch runs a spooled COPY of this script, so its own directory is not the
-# checkout. Resolve the stage scripts through DSV_ROOT (exported by any
-# sourced stage script, or set it yourself), then the submit directory.
-DSV_ROOT="${DSV_ROOT:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}}"
+# The checkout: an exported DSV_ROOT (any sourced stage script exports it,
+# or set it yourself); else this script's own parent when it holds
+# lib/common.sh, which it does unless sbatch is running a spooled COPY of
+# the script; else the submit directory. That cannot come first: an
+# interactive job (srun --pty, salloc) sets it too, to wherever the session
+# started, and a run by hand inside one would look for the scripts there.
+if [ -z "${DSV_ROOT:-}" ]; then
+    DSV_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+    [ -s "$DSV_ROOT/lib/common.sh" ] || DSV_ROOT="${SLURM_SUBMIT_DIR:-$DSV_ROOT}"
+fi
 [ -x "$DSV_ROOT/scripts/correct.sh" ] \
     || { echo "cannot find scripts/correct.sh under DSV_ROOT=$DSV_ROOT; export DSV_ROOT to the depthSV checkout" >&2; exit 2; }
 here="$DSV_ROOT/workflows"
