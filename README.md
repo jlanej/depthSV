@@ -425,7 +425,9 @@ See [`PLAN.md`](PLAN.md) for the design and the current state of that work.
 your `conf/*.env` first, throttle the array (`%100`), split a list longer
 than the site's `MaxArraySize`, pass `--export=ALL` where the site default
 is `SBATCH_EXPORT=NONE`, and give `--output` a log directory rather than
-the checkout. Each task uses half its CPUs for workers and half for
+the checkout. Submit from the checkout's root or export `DSV_ROOT`: sbatch
+runs a copy of the script, which finds the stage scripts through the
+submit directory. Each task uses half its CPUs for workers and half for
 compression. The example under `example/1000G_highcov` shows a
 self-scheduling chain (join → dispatch → array → evaluate) built on the
 same scripts.

@@ -48,7 +48,14 @@ done
 # thresholds) are decided there from EX_SMOKE.
 [ "$smoke" -eq 0 ] || export EX_SMOKE=1
 
-EX_EXAMPLE_DIR="${EX_EXAMPLE_DIR:-${SLURM_SUBMIT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}}"
+# This directory: an exported EX_EXAMPLE_DIR, else this script's own, else
+# SLURM_SUBMIT_DIR for the copy sbatch runs from its spool (see lib.sh).
+if [ -z "${EX_EXAMPLE_DIR:-}" ]; then
+    EX_EXAMPLE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    [ -s "$EX_EXAMPLE_DIR/lib.sh" ] || EX_EXAMPLE_DIR="${SLURM_SUBMIT_DIR:-$EX_EXAMPLE_DIR}"
+fi
+[ -s "$EX_EXAMPLE_DIR/lib.sh" ] \
+    || { echo "ERROR: $0: no lib.sh in $EX_EXAMPLE_DIR; export EX_EXAMPLE_DIR=<depthSV checkout>/example/1000G_highcov" >&2; exit 2; }
 # Stages 0 and 1 below make this run's parameter freeze from the environment
 # and the preamble's files, not from the previous freeze; this driver
 # resolves the parameters the same way, so what it reports is what they

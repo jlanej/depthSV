@@ -16,7 +16,9 @@
 # sample is floored and a single-sample outlier region is skipped; a region
 # is a usable unit of work, including one wide enough to need ten chunks,
 # and one with no depth in any sample (an assembly gap), whose empty shard
-# is committed while an empty result for any other reason is refused.
+# is committed while an empty result for any other reason is refused; the
+# SLURM array dispatcher runs that same unit, finding its checkout from an
+# interactive job's shell and as the copy sbatch runs.
 # ---------------------------------------------------------------------------
 
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/common.sh"
@@ -513,6 +515,54 @@ before="$(dsv_mtime "$work/export/quant_trait_perm.linear.txt.gz")"
 bash "$DSV_ROOT/scripts/export.sh" --results "$work/perm" --regions "$work/export.regions" \
     --name quant_trait_perm --method linear --out "$work/export" --min-count 20 >>"$work/export.log" 2>&1
 check "a finished export is not redone" "$before" "$(dsv_mtime "$work/export/quant_trait_perm.linear.txt.gz")"
+
+# The SLURM array dispatcher runs the same unit - correct, then analyze - for
+# one line of a region list. The copy of it sbatch runs finds the checkout
+# through the submit directory; run from the checkout it must find its own,
+# inside an interactive job (srun --pty, salloc) too, whose SLURM_SUBMIT_DIR
+# is wherever that session started. The DSV_ROOT this suite exported by
+# loading lib/common.sh would win over both, so the tasks run without it.
+slurm="$work/slurm"; unit="chr2_1-50000"
+mkdir -p "$slurm/spool" "$slurm/elsewhere"
+cp "$DSV_ROOT/workflows/slurm_array.sh" "$slurm/spool/slurm_script"
+echo "chr2:1-50000" > "$slurm/regions.txt"
+grep '^quant_trait[[:space:]]' "$manifest" > "$slurm/analyses.tsv"
+slurm_task() {                     # slurm_task <outDir> <script> [VAR=value ...]
+    local out="$1" script="$2"; shift 2
+    ( unset DSV_ROOT; cd "$slurm/elsewhere" \
+      && env DSV_MATRIX="$matrix" DSV_PCS="$pcs" DSV_COVERAGE="$cov" DSV_NDIM=4 DSV_MIN_OBS=30 \
+             DSV_PHENO="$pheno" DSV_PHENO_MANIFEST="$slurm/analyses.tsv" SLURM_CPUS_PER_TASK=2 \
+             DSV_CORRECTED_DIR="$out/corrected" DSV_RESULTS_DIR="$out/assoc" \
+             "$@" bash "$script" "$slurm/regions.txt" )
+}
+slurm_task "$slurm/own" "$DSV_ROOT/workflows/slurm_array.sh" SLURM_SUBMIT_DIR="$slurm/elsewhere" \
+    >"$slurm/own.log" 2>&1 \
+  && cmp -s <(bgzip -dc "$slurm/own/corrected/corrected_ndim4.$unit.txt.gz") \
+            <(bgzip -dc "$work/corrected/corrected_ndim4.$unit.txt.gz") \
+  && cmp -s <(bgzip -dc "$slurm/own/assoc/quant_trait.linear.$unit.txt.gz" | grep -v '^#') \
+            <(bgzip -dc "$work/assoc/quant_trait.linear.chr2.txt.gz" | awk -F'\t' '!/^#/ && $2 < 50000') \
+  && ok "a SLURM array task finds its checkout with SLURM_SUBMIT_DIR elsewhere, and runs the same unit" \
+  || bad_log "a SLURM array task failed with SLURM_SUBMIT_DIR elsewhere" "$slurm/own.log"
+slurm_task "$slurm/spooled" "$slurm/spool/slurm_script" SLURM_SUBMIT_DIR="$DSV_ROOT" \
+    >"$slurm/spooled.log" 2>&1 \
+  && cmp -s <(bgzip -dc "$slurm/spooled/assoc/quant_trait.linear.$unit.txt.gz") \
+            <(bgzip -dc "$slurm/own/assoc/quant_trait.linear.$unit.txt.gz") \
+  && ok "  and as sbatch's spooled copy, through the submit directory" \
+  || bad_log "  the spooled copy did not find the checkout through the submit directory" "$slurm/spooled.log"
+if slurm_task "$slurm/lost" "$slurm/spool/slurm_script" SLURM_SUBMIT_DIR="$slurm/elsewhere" \
+       >"$slurm/lost.log" 2>&1; then
+    bad "  a spooled copy submitted from elsewhere ran"
+else
+    check "  submitted from elsewhere, it stops naming where it looked" \
+          "$(grep -c "under DSV_ROOT=$slurm/elsewhere;" "$slurm/lost.log")" "1"
+fi
+if slurm_task "$slurm/exported" "$DSV_ROOT/workflows/slurm_array.sh" \
+       DSV_ROOT="$slurm/elsewhere" SLURM_SUBMIT_DIR="$DSV_ROOT" >"$slurm/exported.log" 2>&1; then
+    bad "  an exported DSV_ROOT was passed over for the script's own checkout"
+else
+    check "  an exported DSV_ROOT wins over both (a wrong one is refused by name)" \
+          "$(grep -c "under DSV_ROOT=$slurm/elsewhere;" "$slurm/exported.log")" "1"
+fi
 
 # --- assertions on the numbers ---------------------------------------------
 echo "[5/6] results"
