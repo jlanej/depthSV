@@ -258,10 +258,19 @@ contig_class <- function(chrom) {
 }
 # Base subsetting on purpose: inside a data.table `[` the arguments would
 # resolve to the PAR table's own start/end columns.
+#
+# A bin is pseudo-autosomal when its midpoint lies in a PAR, not when it
+# merely touches one: a bin straddling a boundary holds mostly one kind of
+# sequence, and it is modelled as that. Any overlap made a bin with a few bp
+# of PAR diploid in everyone although nearly all of it is sex-specific - on a
+# reference whose chrY PARs are masked (the GRCh38 analysis sets), a male-only
+# bin with every female at the floor: a sex indicator in any model without a
+# sex term. Half-open BED intervals, so a midpoint on a PAR's end is outside it.
 in_par <- function(chrom, s, e) {
   if (is.null(par)) return(FALSE)
   c0 <- toupper(sub("^chr", "", chrom))
-  any(par$chrom == c0 & par$end > s & par$start < e)
+  mid <- (s + e) / 2
+  any(par$chrom == c0 & par$start <= mid & mid < par$end)
 }
 # Expected copies per kept sample for a region; NA where there are none.
 expected_copies <- function(cls, is_par) {

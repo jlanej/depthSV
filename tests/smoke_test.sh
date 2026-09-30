@@ -454,12 +454,17 @@ DSV_ALLOW_EMPTY=1 bash "$DSV_ROOT/scripts/analyze.sh" --corrected "$work/correct
   && ok "  and accepted with DSV_ALLOW_EMPTY=1" \
   || bad_log "  DSV_ALLOW_EMPTY=1 did not accept the empty result" "$work/gap.allowed.log"
 
-# Regions of one shard fitted two ways must still come out in position order.
-# A linear model fits the complete regions of a block together and those with
-# missing samples one at a time; on chrY under the ploidy model that means a
-# PAR bin (diploid in everyone) after male-only bins, as with GRCh38's PAR2 at
-# the end of chrY. Out of order, tabix refuses the shard and the unit fails.
-printf 'chrX\t0\t20000\tPAR1\nchrY\t150000\t200000\tPAR2\n' > "$work/par_tail.bed"
+# A PAR at the end of chrY, as GRCh38's PAR2 is, after male-only sequence,
+# with both of its edges inside a bin (chrY:150900-199100).
+#  - A bin is pseudo-autosomal when its midpoint lies in a PAR: the bins at
+#    150000 and 199000 hold 100 bp of it each and stay male-only, as their
+#    neighbours outside do; the bins between are diploid in everyone.
+#  - Regions of one shard fitted two ways must still come out in position
+#    order. A linear model fits the complete regions of a block together and
+#    those with missing samples one at a time, so the PAR bins (complete) and
+#    the male-only bins around them (females missing) are fitted apart. Out of
+#    order, tabix refuses the shard and the unit fails.
+printf 'chrX\t0\t20000\tPAR1\nchrY\t150900\t199100\tPAR2\n' > "$work/par_tail.bed"
 tail_shard="$work/partail/assoc/quant_trait.linear.chrY.txt.gz"
 if bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverage "$cov" \
         --region chrY --out "$work/partail" --ndim 4 --jobs 2 --chunk 100 \
@@ -468,12 +473,16 @@ if bash "$DSV_ROOT/scripts/correct.sh" --matrix "$matrix" --pcs "$pcs" --coverag
         --pheno "$pheno" --pcs "$pcs" --model "quant_trait~cov_resids+age" --region chrY \
         --out "$work/partail/assoc" --jobs 2 -- --minObs 30 >>"$work/partail.log" 2>&1 \
    && [ -f "$tail_shard.done" ]; then
-    check "a shard with male-only chrY rows before PAR rows is written in position order" \
+    check "a shard with male-only chrY rows before and after PAR rows is written in position order" \
           "$(bgzip -dc "$tail_shard" | awk -F'\t' '!/^#/ { if ($2 + 0 < p) bad = 1; p = $2 + 0 } END { print bad ? "unsorted" : "sorted" }')" "sorted"
-    check "  and holds both kinds of row (males only; everyone)" \
-          "$(bgzip -dc "$tail_shard" | awk -F'\t' '!/^#/ { n[$5] = 1 } END { print length(n) }')" "2"
+    # N by bin: the male count outside the PAR, everyone inside it.
+    nby() { bgzip -dc "$tail_shard" | awk -F'\t' -v s="$1" '!/^#/ && $2 == s { print $5 }'; }
+    check "  a bin with 100 bp of the PAR at either edge stays male-only (midpoint rule)" \
+          "$(nby 150000) $(nby 199000)" "$(nby 149000) $(nby 149000)"
+    check "  and the bins inside it are diploid in everyone" \
+          "$( [ -n "$(nby 151000)" ] && [ "$(nby 151000)" -gt "$(nby 149000)" ] && [ "$(nby 151000)" = "$(nby 198000)" ] && echo yes )" "yes"
 else
-    bad_log "a chrY region with male-only rows before PAR rows did not finish" "$work/partail.log"
+    bad_log "a chrY region with male-only rows around PAR rows did not finish" "$work/partail.log"
 fi
 
 # Permutation maxima per shard, folded by the export step into an empirical

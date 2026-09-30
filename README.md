@@ -117,8 +117,10 @@ is given (`--sex FILE`, `--sex-col NAME`; coded M/F, male/female or 1/2 —
 0/1 is refused as ambiguous), with the pseudo-autosomal regions from `--par`
 (`conf/par.grch38.bed`, `conf/par.grch37.bed`): chrX outside the PARs is one
 copy in males, chrY one copy in males and none in females, whose chrY depth
-becomes missing rather than the log2 of nothing. Without it every
-sex-chromosome bin is a sex indicator and dominates any phenotype that
+becomes missing rather than the log2 of nothing. A bin counts as
+pseudo-autosomal when its midpoint lies in a PAR: a bin straddling a
+boundary is modelled as the sequence it mostly holds. Without the sex table
+every sex-chromosome bin is a sex indicator and dominates any phenotype that
 correlates with sex. The log2 ratio is floored at `--winsor-log2` (default
 −3) so a zero-depth sample cannot carry a region's whole leverage.
 
@@ -223,7 +225,7 @@ them prints the full usage. The rest are these:
 | `--pcs FILE`, `--ndim K` | analyze | the PC table and count the correction used; `k` defaults to the corrected file's name, the table to `DSV_PCS` |
 | `--case-level L` | analyze | which level of a two-level text response is the case |
 | `--sex FILE`, `--sex-col NAME` | correct | per-sample sex, turning on the ploidy model for chrX/chrY (`DSV_SEX`, `DSV_SEX_COL`) |
-| `--par BED` | correct | pseudo-autosomal regions, diploid in both sexes (`conf/par.grch38.bed`) |
+| `--par BED` | correct | pseudo-autosomal regions, diploid in both sexes, by bin midpoint (`conf/par.grch38.bed`) |
 | `--winsor-log2 X` | correct | floor on the log2 ratio (default −3) |
 | `--name` | analyze | label for a single-model run; defaults to the response variable |
 | `--batch-size N` | join | samples per `paste` batch; the default sizes it near √N, inside the open-file limit |
