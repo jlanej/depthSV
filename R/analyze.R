@@ -461,7 +461,8 @@ fit_coxph_one <- function(g, s) {
 
 fit_one <- switch(opt$regressionMethod, linear = fit_linear_one, logistic = fit_logistic_one, coxph = fit_coxph_one)
 
-emit <- function(meta_row, n_obs, s, r) {
+# One output row for a region fitted on its own design.
+format_row <- function(meta_row, n_obs, s, r) {
   if (opt$regressionMethod == "linear") { nc <- n_obs; nk <- n_obs }
   else {
     resp <- if (opt$regressionMethod == "logistic") s$y else aligned[[response]][base_rows][s$mask]
@@ -470,7 +471,7 @@ emit <- function(meta_row, n_obs, s, r) {
   vals <- r$vals
   conv <- if (opt$regressionMethod == "linear") character(0) else as.character(as.integer(vals[length(vals)]))
   if (opt$regressionMethod != "linear") vals <- vals[-length(vals)]
-  cat(paste(c(meta_row, n_obs, nc, nk, fmt(vals), conv, fmt(r$share)), collapse = "\t"), "\n", sep = "")
+  paste(c(meta_row, n_obs, nc, nk, fmt(vals), conv, fmt(r$share)), collapse = "\t")
 }
 
 # --- stream ----------------------------------------------------------------
@@ -511,6 +512,12 @@ repeat {
   n_constant <- n_constant + sum(flat & row_var <= constant_var)
   n_min_var  <- n_min_var + sum(flat & row_var > constant_var)
   complete <- ok & n_obs == n_use
+  # The block's output rows, written in input order once every region is
+  # fitted: complete regions are fitted together and the rest one at a time,
+  # and a block where a region with missing samples (chrY in females) comes
+  # before a complete one (a bin counted as PAR) would otherwise come out
+  # unsorted - which tabix refuses.
+  out_lines <- character(nrow(block))
 
   # Complete regions of a linear model: one block projection for all of them.
   if (opt$regressionMethod == "linear" && any(complete)) {
@@ -534,7 +541,7 @@ repeat {
       out <- cbind(meta[rows[keepi], , drop = FALSE], n_obs[rows[keepi]], n_obs[rows[keepi]], n_obs[rows[keepi]],
                    fmt(beta[keepi]), fmt(se[keepi]), fmt(tval[keepi]), fmt(pval[keepi]), fmt(lp[keepi]),
                    fmt(share[keepi]))
-      writeLines(apply(out, 1L, paste, collapse = "\t"))
+      out_lines[rows[keepi]] <- apply(out, 1L, paste, collapse = "\t")
       n_out <- n_out + length(keepi)
       if (n_perm > 0) {
         # One product for every region x permutation; the tested regions only.
@@ -560,10 +567,11 @@ repeat {
     r <- tryCatch(fit_one(g_all[mask], s), error = function(e) { n_error <<- n_error + 1L; NULL })
     if (is.null(r) || anyNA(r$vals)) { n_skipped <- n_skipped + 1L; next }
     if (r$share > opt$maxShare) { n_share <- n_share + 1L; next }
-    emit(meta[i, ], n_obs[i], s, r)
+    out_lines[i] <- format_row(meta[i, ], n_obs[i], s, r)
     n_out <- n_out + 1L
     if (n_perm > 0 && !is.null(r$perm)) perm_max <- pmax(perm_max, r$perm)
   }
+  if (any(nzchar(out_lines))) writeLines(out_lines[nzchar(out_lines)])
 }
 
 if (n_perm > 0) {
